@@ -76,7 +76,7 @@ class PaperTrader:
         logger.info(f"{'='*50}")
         logger.info(f"Signal check at {now}")
 
-        # ── Step 1: Can we trade? ──
+        # ── Step 1: General risk checks (symbol-specific check done below) ──
         can_trade, reason = self.risk_mgr.can_trade()
         if not can_trade:
             logger.warning(f"Trading blocked: {reason}")
@@ -123,8 +123,14 @@ class PaperTrader:
                   f"Vol Ratio={sig['volume_ratio']:.2f}")
             print(f"  Signal: {sig['reason']}")
 
-            # ── Entry Logic (with on-chain filter) ──
+            # ── Entry Logic (with on-chain + correlation filter) ──
             if signal_val != 0 and not has_position:
+                # Check correlation filter
+                can_open, corr_reason = self.risk_mgr.can_trade(symbol=symbol)
+                if not can_open:
+                    print(f"  ⛔ {corr_reason}")
+                    continue
+
                 # Check on-chain filter
                 enhanced = self.onchain_filter.enhance_signal(signal_val, symbol)
                 print(f"  🔍 On-chain filter: {enhanced['reason']}")

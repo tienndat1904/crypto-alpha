@@ -33,6 +33,7 @@ class BacktestEngine:
         df: pd.DataFrame,
         initial_capital: float = 500.0,
         fee: float = 0.001,
+        slippage_pct: float = 0.0005,
         risk_per_trade: float = 0.02,
         stop_loss_pct: float = None,
         stop_loss_atr: float = None,
@@ -42,6 +43,9 @@ class BacktestEngine:
             df: DataFrame with OHLCV + indicators (must have 'close')
             initial_capital: Starting capital in USD
             fee: Trading fee per side (0.001 = 0.1%)
+            slippage_pct: Estimated slippage per trade (0.0005 = 0.05%)
+                          Accounts for bid-ask spread and market impact.
+                          Typical values: 0.0003 for BTC, 0.001 for low-cap alts.
             risk_per_trade: Max risk per trade as fraction of capital
             stop_loss_pct: Fixed stop-loss percentage (e.g. 0.03 = 3%)
             stop_loss_atr: Stop-loss as ATR multiplier (requires 'atr' column)
@@ -49,6 +53,7 @@ class BacktestEngine:
         self.df = df.copy()
         self.initial_capital = initial_capital
         self.fee = fee
+        self.slippage_pct = slippage_pct
         self.risk_per_trade = risk_per_trade
         self.stop_loss_pct = stop_loss_pct
         self.stop_loss_atr = stop_loss_atr
@@ -80,8 +85,8 @@ class BacktestEngine:
         # (signal at time t, enter at t+1, return measured at t+1)
         df["strategy_return_gross"] = df["position"].shift(1).fillna(0) * df["market_return"]
 
-        # Apply trading costs on position changes
-        df["cost"] = df["trade"].abs() * self.fee
+        # Apply trading costs + slippage on position changes
+        df["cost"] = df["trade"].abs() * (self.fee + self.slippage_pct)
         df["strategy_return"] = df["strategy_return_gross"] - df["cost"]
 
         # Apply stop-loss
@@ -122,8 +127,8 @@ class BacktestEngine:
                     continue
 
                 if current_return < -sl:
-                    # Stop-loss hit
-                    df.iloc[i, df.columns.get_loc("strategy_return")] = -sl - self.fee
+                    # Stop-loss hit — include fee + slippage on exit
+                    df.iloc[i, df.columns.get_loc("strategy_return")] = -sl - self.fee - self.slippage_pct
                     df.iloc[i, df.columns.get_loc("position")] = 0
                     entry_price = None
             else:
@@ -223,7 +228,9 @@ class BacktestEngine:
             "avg_loss_pct": avg_loss * 100,
             "profit_factor": profit_factor,
             "expectancy_pct": expectancy * 100,
-            "total_fees_usd": (df["cost"] * self.initial_capital).sum(),
+            "total_costs_usd": (df["cost"] * self.initial_capital).sum(),
+            "total_fees_usd": (df["trade"].abs() * self.fee * self.initial_capital).sum(),
+            "total_slippage_usd": (df["trade"].abs() * self.slippage_pct * self.initial_capital).sum(),
             "final_equity": equity.iloc[-1],
         }
 
@@ -253,7 +260,9 @@ class BacktestEngine:
         print(f"  Avg Loss:            {m['avg_loss_pct']:.3f}%")
         print(f"  Profit Factor:       {m['profit_factor']:.2f}")
         print(f"  Expectancy:          {m['expectancy_pct']:+.4f}%")
-        print(f"  Total Fees:          ${m['total_fees_usd']:.2f}")
+        print(f"  Total Costs:         ${m['total_costs_usd']:.2f}")
+        print(f"    Fees:              ${m['total_fees_usd']:.2f}")
+        print(f"    Slippage:          ${m['total_slippage_usd']:.2f}")
         print("=" * 55 + "\n")
 
     def plot_equity(self, title: str = "Equity Curve"):
@@ -328,3 +337,101 @@ def walk_forward_split(
         f"({test.index[0].date()} → {test.index[-1].date()})"
     )
     return train, test
+
+
+def rolling_walk_forward(
+    df: pd.DataFrame,
+    n_splits: int = 5,
+    train_ratio: float = 0.7,
+    min_train_rows: int = 200,
+) -> list:
+    """
+    Rolling walk-forward split: slides a window across the data
+    to produce multiple train/test folds. This tests strategy stability
+    across different market regimes (bull, bear, sideways).
+
+    Unlike a single 70/30 split, rolling walk-forward reveals:
+    - Whether alpha is consistent across time periods
+    - Overfitting to a specific market regime
+    - Parameter stability
+
+    Args:
+        df: DataFrame with datetime index
+        n_splits: Number of rolling windows (default 5)
+        train_ratio: Fraction of each window for training
+        min_train_rows: Minimum rows in training set
+
+    Returns:
+        List of (train_df, test_df, fold_info) tuples.
+        fold_info is a dict with fold metadata.
+
+    Example with n_splits=4 on 1000 rows:
+        Fold 1: train[0:350]     test[350:500]
+        Fold 2: train[167:517]   test[517:667]
+        Fold 3: train[333:683]   test[683:833]
+        Fold 4: train[500:850]   test[850:1000]
+    """
+    total = len(df)
+
+    # Each fold covers this many rows
+    window_size = int(total / (1 + (n_splits - 1) * (1 - train_ratio)))
+    if window_size < min_train_rows / train_ratio:
+        # Fall back to fewer splits if data is too small
+        window_size = total
+        n_splits = 1
+
+    train_size = int(window_size * train_ratio)
+    test_size = window_size - train_size
+
+    if train_size < min_train_rows:
+        logger.warning(
+            f"Train size ({train_size}) below minimum ({min_train_rows}). "
+            f"Reducing to {max(1, (total - min_train_rows) // test_size)} splits."
+        )
+        train_size = min_train_rows
+        test_size = int(train_size * (1 - train_ratio) / train_ratio)
+        n_splits = max(1, (total - train_size) // test_size)
+
+    # Calculate step size between folds
+    step = (total - train_size - test_size) // max(1, n_splits - 1) if n_splits > 1 else 0
+
+    folds = []
+    for i in range(n_splits):
+        start = i * step
+        train_end = start + train_size
+        test_end = min(train_end + test_size, total)
+
+        if train_end >= total or test_end <= train_end:
+            break
+
+        train = df.iloc[start:train_end].copy()
+        test = df.iloc[train_end:test_end].copy()
+
+        fold_info = {
+            "fold": i + 1,
+            "total_folds": n_splits,
+            "train_start": train.index[0],
+            "train_end": train.index[-1],
+            "test_start": test.index[0],
+            "test_end": test.index[-1],
+            "train_rows": len(train),
+            "test_rows": len(test),
+        }
+
+        logger.info(
+            f"Fold {i+1}/{n_splits}: "
+            f"train[{train.index[0].date()}→{train.index[-1].date()}] ({len(train)}), "
+            f"test[{test.index[0].date()}→{test.index[-1].date()}] ({len(test)})"
+        )
+
+        folds.append((train, test, fold_info))
+
+    if not folds:
+        logger.warning("Could not create any folds. Falling back to single split.")
+        return [(
+            *walk_forward_split(df, train_ratio),
+            {"fold": 1, "total_folds": 1, "train_rows": int(total * train_ratio),
+             "test_rows": total - int(total * train_ratio)},
+        )]
+
+    return folds

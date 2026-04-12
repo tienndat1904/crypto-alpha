@@ -19,7 +19,7 @@ import numpy as np
 from sqlalchemy import text
 from loguru import logger
 
-from config.settings import COIN_UNIVERSE, DATABASE_URL, LOG_FILE
+from config.settings import COIN_UNIVERSE, DATABASE_URL, LOG_FILE, SLIPPAGE_PCT
 from data.models import engine
 from backtest import BacktestEngine, walk_forward_split
 from strategies.technical_alphas import STRATEGIES
@@ -68,6 +68,7 @@ def run_single(symbol: str, timeframe: str, strategy_name: str) -> dict:
         test_df,
         initial_capital=500,
         fee=0.001,
+        slippage_pct=SLIPPAGE_PCT,
         stop_loss_pct=0.05,
     )
     bt.run(test_signals)

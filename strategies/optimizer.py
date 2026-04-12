@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from backtest import BacktestEngine
 from utils.indicators import add_all_indicators
+from config.settings import SLIPPAGE_PCT
 
 
 # ═══════════════════════════════════════════
@@ -187,6 +188,7 @@ def optimize_strategy(
                 df_train,
                 initial_capital=initial_capital,
                 fee=fee,
+                slippage_pct=SLIPPAGE_PCT,
                 stop_loss_pct=sl,
             )
             bt.run(signals)
@@ -264,6 +266,7 @@ def validate_on_test(
         df_test,
         initial_capital=initial_capital,
         fee=fee,
+        slippage_pct=SLIPPAGE_PCT,
         stop_loss_pct=sl,
     )
     bt.run(signals)

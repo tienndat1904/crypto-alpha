@@ -25,6 +25,7 @@ from config.settings import (
     MAX_DRAWDOWN,
     TRADING_FEE,
 )
+from utils.correlation import CorrelationFilter
 
 
 STATE_FILE = Path("trading/state.json")
@@ -35,6 +36,7 @@ class RiskManager:
 
     def __init__(self):
         self.state = self._load_state()
+        self.correlation_filter = CorrelationFilter()
         logger.info(
             f"RiskManager loaded. Capital: ${self.state['capital']:.2f}, "
             f"Positions: {len(self.state['open_positions'])}"
@@ -70,9 +72,14 @@ class RiskManager:
 
     # ── Risk Checks ──
 
-    def can_trade(self) -> tuple:
+    def can_trade(self, symbol: str = None) -> tuple:
         """
         Check if trading is allowed.
+
+        Args:
+            symbol: Symbol to check correlation against open positions.
+                    If None, only checks general risk rules.
+
         Returns (allowed: bool, reason: str)
         """
         # Check pause
@@ -104,6 +111,15 @@ class RiskManager:
             self.state["paused_until"] = pause_until.isoformat()
             self._save_state()
             return False, "5 consecutive losses. Pausing for 1 week."
+
+        # Correlation filter: block if too correlated with open positions
+        if symbol and self.state["open_positions"]:
+            open_symbols = list(self.state["open_positions"].keys())
+            allowed, reason = self.correlation_filter.can_open_position(
+                symbol, open_symbols
+            )
+            if not allowed:
+                return False, reason
 
         return True, "OK"
 

@@ -92,9 +92,12 @@ MAX_POSITIONS = 3                          # Simultaneous positions
 MAX_DRAWDOWN = 0.15                        # 15% -> kill switch
 MAX_CORRELATED_POSITIONS = 2              # Max same-sector positions
 STOP_LOSS_ATR_MULTIPLIER = 1.5            # SL = 1.5x ATR
+CORRELATION_THRESHOLD = 0.75              # Block new position if corr > 0.75 with existing
+CORRELATION_LOOKBACK_DAYS = 30            # Days to compute rolling correlation
 
-# Trading fee (Binance spot, no BNB discount)
+# Trading costs (Binance spot, no BNB discount)
 TRADING_FEE = 0.001                        # 0.1% maker/taker
+SLIPPAGE_PCT = 0.0005                      # 0.05% estimated slippage per trade
 
 # ═══════════════════════════════════════════
 # ALPHA RESEARCH CONFIG (Phase 2)
