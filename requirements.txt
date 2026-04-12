@@ -1,0 +1,33 @@
+# ═══════════════════════════════════════════
+# Crypto Alpha Trading System - Dependencies
+# Phase 1-2: Data Pipeline & Alpha Research
+# ═══════════════════════════════════════════
+
+# --- Exchange API ---
+ccxt>=4.0.0                  # Unified exchange API (Binance, OKX, Bybit...)
+
+# --- Data & Analysis ---
+pandas>=2.0.0,<2.2.0         # DataFrames, time-series manipulation
+numpy>=1.24.0,<2.0.0         # Numerical computing (capped for vectorbt)
+ta>=0.11.0                   # Technical indicators (RSI, MACD, BB, ATR...)
+scipy>=1.11.0,<1.14.0        # Statistical functions
+
+# --- Database ---
+sqlalchemy>=2.0.0            # ORM & DB connection
+pymysql>=1.1.0               # MySQL driver
+python-dotenv>=1.0.0         # Load .env secrets
+
+# --- Backtesting (Phase 2) ---
+vectorbt>=0.26.0             # Fast vectorized backtesting
+matplotlib>=3.7.0            # Plotting
+plotly>=5.15.0               # Interactive charts
+
+# --- Utilities ---
+schedule>=1.2.0              # Job scheduling (data updates)
+loguru>=0.7.0                # Better logging
+tqdm>=4.65.0                 # Progress bars
+requests>=2.31.0             # HTTP requests
+
+# --- Jupyter (EDA) ---
+jupyter>=1.0.0               # Notebooks
+ipykernel>=6.25.0            # Jupyter kernel

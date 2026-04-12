@@ -1,0 +1,45 @@
+{
+  "capital": 502.47401112999995,
+  "peak_capital": 502.47401112999995,
+  "open_positions": {},
+  "trade_history": [
+    {
+      "symbol": "BNB/USDT",
+      "side": "short",
+      "entry_price": 595.79,
+      "size_base": 0.335689,
+      "size_usdt": 200.0,
+      "stop_price": 571.9584,
+      "stop_loss_pct": 0.04,
+      "opened_at": "2026-04-02T03:39:47.348731+00:00",
+      "status": "open",
+      "exit_price": 588.82,
+      "pnl_pct": 1.17,
+      "pnl_usd": 2.14,
+      "reason": "signal_exit",
+      "closed_at": "2026-04-02T04:42:40.174536+00:00"
+    },
+    {
+      "symbol": "SOL/USDT",
+      "side": "short",
+      "entry_price": 79.25,
+      "size_base": 1.514196,
+      "size_usdt": 120.0,
+      "stop_price": 76.08,
+      "stop_loss_pct": 0.04,
+      "opened_at": "2026-04-02T03:39:47.349738+00:00",
+      "status": "open",
+      "exit_price": 78.95,
+      "pnl_pct": 0.379,
+      "pnl_usd": 0.33,
+      "reason": "signal_exit",
+      "closed_at": "2026-04-02T04:42:40.184453+00:00"
+    }
+  ],
+  "consecutive_losses": 0,
+  "total_trades": 2,
+  "total_wins": 2,
+  "total_pnl": 2.4740111299999668,
+  "paused_until": null,
+  "created_at": "2026-04-02T03:39:31.490428+00:00"
+}
