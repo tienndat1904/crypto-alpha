@@ -285,3 +285,6 @@ STRATEGIES = {
         "description": "Weighted combination of all strategies",
     },
 }
+
+# Multi-timeframe is registered separately since it needs 2 DataFrames (4H + 1D).
+# Import it via: from strategies.multi_timeframe import MultiTimeframeStrategy

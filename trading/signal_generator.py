@@ -21,6 +21,7 @@ from loguru import logger
 
 from utils.indicators import add_all_indicators
 from utils.regime import RegimeDetector
+from strategies.multi_timeframe import MultiTimeframeStrategy
 
 
 # ═══════════════════════════════════════════
@@ -161,7 +162,8 @@ class SignalGenerator:
             "options": {"defaultType": "spot"},
         })
         self.regime_detector = RegimeDetector()
-        logger.info("SignalGenerator v3 initialized (5 coins, 2 strategies, regime detection).")
+        self.mtf_strategy = MultiTimeframeStrategy()
+        logger.info("SignalGenerator v3 initialized (5 coins, 3 strategies, regime + MTF).")
 
     def fetch_latest(self, symbol: str, timeframe: str, limit: int = 250) -> pd.DataFrame:
         """Fetch latest candles from Binance."""
@@ -252,6 +254,30 @@ class SignalGenerator:
 
         return {"signal": signal, "reason": reason, "strategy": "volatility_breakout"}
 
+    # ── Strategy: Multi-Timeframe (1D trend + 4H entry) ──
+
+    def _check_multi_timeframe(self, symbol: str, timeframe: str, df_4h: pd.DataFrame) -> dict:
+        """Check multi-timeframe signal using 1D trend + 4H entry."""
+        try:
+            # Fetch daily data
+            df_1d = self.fetch_latest(symbol, "1d", limit=100)
+            if df_1d.empty or len(df_1d) < 55:
+                return None
+
+            df_1d = add_all_indicators(df_1d)
+            result = self.mtf_strategy.check_current_signal(df_4h, df_1d)
+
+            if result["signal"] != 0:
+                logger.info(
+                    f"  MTF signal: {symbol} daily_trend={result['daily_trend_label']}, "
+                    f"signal={result['signal']}"
+                )
+
+            return result
+        except Exception as e:
+            logger.debug(f"MTF check failed for {symbol}: {e}")
+            return None
+
     # ── Main Signal Logic ──
 
     def generate_signal(self, symbol: str) -> dict:
@@ -318,8 +344,30 @@ class SignalGenerator:
                     ),
                 }
 
-        # No signal from any strategy
-        # Check if existing position should exit (Momentum Reversal exit logic)
+        # No signal from primary strategies — try multi-timeframe
+        mtf_result = self._check_multi_timeframe(symbol, config["timeframe"], df)
+        if mtf_result and mtf_result["signal"] != 0:
+            return {
+                **mtf_result,
+                "symbol": symbol,
+                "timeframe": config["timeframe"],
+                "stop_loss": 0.03,
+                "close": latest["close"],
+                "roc_10": latest["roc_10"],
+                "rsi": latest["rsi"],
+                "price_position": latest["price_position"],
+                "atr_pct": latest["atr_pct"],
+                "bb_pct_b": latest["bb_pct_b"],
+                "volume_ratio": latest["volume_ratio"],
+                "adx": latest["adx"],
+                "regime": regime_info["regime"],
+                "regime_confidence": regime_info["confidence"],
+                "timestamp": datetime.now(timezone.utc).strftime(
+                    "%Y-%m-%d %H:%M:%S UTC"
+                ),
+            }
+
+        # No signal at all — check exit logic
         mr_params = config["strategies"][0]["params"]  # First is always MR
         roc = latest["roc_10"]
         exit_reason = ""

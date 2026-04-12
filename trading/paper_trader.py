@@ -30,7 +30,6 @@ import os
 import sys
 sys.path.insert(0, ".")
 
-import requests
 from datetime import datetime, timezone
 from loguru import logger
 
@@ -38,27 +37,9 @@ from config.settings import LOG_FILE, UPDATE_INTERVAL_HOURS
 from trading.signal_generator import SignalGenerator, ALPHA_CONFIGS
 from trading.risk_manager import RiskManager
 from strategies.onchain_alphas import OnchainSignalFilter
+from utils.telegram import TelegramAlert
 
 logger.add(LOG_FILE, rotation="10 MB", level="INFO")
-
-# ── Telegram Config (optional) ──
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-
-
-def send_telegram(message: str):
-    """Send message via Telegram bot (if configured)."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        requests.post(url, json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML",
-        }, timeout=10)
-    except Exception as e:
-        logger.error(f"Telegram send failed: {e}")
 
 
 class PaperTrader:
@@ -68,7 +49,8 @@ class PaperTrader:
         self.signal_gen = SignalGenerator()
         self.risk_mgr = RiskManager()
         self.onchain_filter = OnchainSignalFilter()
-        logger.info("PaperTrader initialized (with on-chain filter).")
+        self.tg = TelegramAlert()
+        logger.info("PaperTrader initialized (with on-chain filter + Telegram).")
         
     def check_and_trade(self):
         """Main loop iteration: check signals, manage positions, execute trades."""
@@ -81,7 +63,7 @@ class PaperTrader:
         if not can_trade:
             logger.warning(f"Trading blocked: {reason}")
             print(f"\n⛔ Trading blocked: {reason}")
-            send_telegram(f"⛔ <b>Trading blocked</b>\n{reason}")
+            self.tg.send(f"⛔ <b>Trading blocked</b>\n{reason}")
             return
 
         # ── Step 2: Check stop-losses on open positions ──
@@ -95,13 +77,8 @@ class PaperTrader:
 
         stopped = self.risk_mgr.check_stop_losses(current_prices)
         for trade in stopped:
-            msg = (
-                f"🛑 <b>STOP-LOSS HIT</b>\n"
-                f"Symbol: {trade['symbol']}\n"
-                f"PnL: {trade['pnl_pct']:+.2f}% (${trade['pnl_usd']:+.2f})"
-            )
             print(f"\n🛑 STOP-LOSS: {trade['symbol']} PnL={trade['pnl_pct']:+.2f}%")
-            send_telegram(msg)
+            self.tg.send_stop_loss(trade["symbol"], trade["pnl_pct"], trade["pnl_usd"])
 
         # ── Step 3: Get on-chain regime ──
         regime = self.onchain_filter.get_current_regime()
@@ -168,7 +145,15 @@ class PaperTrader:
                 )
                 print(f"\n  {emoji} OPENED {direction}: ${sizing['size_usdt']:.2f} "
                       f"(confidence={enhanced['confidence']:.0%})")
-                send_telegram(msg)
+                self.tg.send_trade_opened(
+                    symbol=symbol, side=side,
+                    entry_price=sig["close"],
+                    size_usdt=sizing["size_usdt"],
+                    stop_price=sizing["stop_price"],
+                    strategy=sig.get("strategy", ""),
+                    regime=sig.get("regime", ""),
+                    confidence=enhanced.get("confidence", 0),
+                )
 
             # ── Exit Logic ──
             elif signal_val == 0 and has_position:
@@ -179,13 +164,14 @@ class PaperTrader:
                 )
                 if trade:
                     emoji = "✅" if trade["pnl_usd"] > 0 else "❌"
-                    msg = (
-                        f"{emoji} <b>CLOSED {symbol}</b>\n"
-                        f"PnL: {trade['pnl_pct']:+.2f}% (${trade['pnl_usd']:+.2f})\n"
-                        f"Reason: {sig['reason']}"
-                    )
                     print(f"\n  {emoji} CLOSED: PnL={trade['pnl_pct']:+.2f}%")
-                    send_telegram(msg)
+                    self.tg.send_trade_closed(
+                        symbol=symbol,
+                        pnl_pct=trade["pnl_pct"],
+                        pnl_usd=trade["pnl_usd"],
+                        reason=sig["reason"],
+                        capital=self.risk_mgr.state["capital"],
+                    )
 
             elif has_position:
                 pos = self.risk_mgr.state["open_positions"][symbol]
@@ -209,11 +195,7 @@ class PaperTrader:
         print(f"  Press Ctrl+C to stop")
         print("=" * 50)
 
-        send_telegram(
-            "🤖 <b>Paper Trading Bot Started</b>\n"
-            f"Coins: {', '.join(ALPHA_CONFIGS.keys())}\n"
-            f"Interval: {interval_hours}h"
-        )
+        self.tg.send_bot_started(list(ALPHA_CONFIGS.keys()))
 
         while True:
             try:
@@ -223,7 +205,7 @@ class PaperTrader:
                 time.sleep(interval_hours * 3600)
             except KeyboardInterrupt:
                 print("\n\n🛑 Bot stopped by user.")
-                send_telegram("🛑 Paper Trading Bot stopped.")
+                self.tg.send_bot_stopped()
                 break
             except Exception as e:
                 logger.error(f"Error in main loop: {e}")
@@ -272,10 +254,19 @@ def main():
     parser.add_argument("--status", action="store_true", help="Show current status")
     parser.add_argument("--history", action="store_true", help="Show trade history")
     parser.add_argument("--reset", action="store_true", help="Reset all trading state")
+    parser.add_argument("--test-telegram", action="store_true", help="Test Telegram connection")
     parser.add_argument("--interval", type=int, default=4, help="Check interval in hours")
 
     args = parser.parse_args()
     bot = PaperTrader()
+
+    if args.test_telegram:
+        if bot.tg.test_connection():
+            print("✓ Telegram connected! Check your bot chat.")
+        else:
+            print("✗ Telegram not configured or connection failed.")
+            print("  Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env")
+        return
 
     if args.once:
         bot.check_and_trade()
