@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from loguru import logger
 
 from utils.indicators import add_all_indicators
+from utils.regime import RegimeDetector
 
 
 # ═══════════════════════════════════════════
@@ -159,7 +160,8 @@ class SignalGenerator:
             "enableRateLimit": True,
             "options": {"defaultType": "spot"},
         })
-        logger.info("SignalGenerator v2 initialized (5 coins, 2 strategies).")
+        self.regime_detector = RegimeDetector()
+        logger.info("SignalGenerator v3 initialized (5 coins, 2 strategies, regime detection).")
 
     def fetch_latest(self, symbol: str, timeframe: str, limit: int = 250) -> pd.DataFrame:
         """Fetch latest candles from Binance."""
@@ -269,10 +271,24 @@ class SignalGenerator:
         df = add_all_indicators(df)
         latest = df.iloc[-1]
 
-        # Check each strategy in order
+        # Detect market regime
+        regime_info = self.regime_detector.detect(df)
+        recommendation = self.regime_detector.get_strategy_recommendation(regime_info)
+        avoid_strategies = recommendation["avoid"]
+
+        logger.debug(
+            f"{symbol} regime={regime_info['regime']} "
+            f"(confidence={regime_info['confidence']:.0%}, ADX={regime_info['adx']:.1f})"
+        )
+
+        # Check each strategy in order, skip if regime says avoid
         for strat_config in config["strategies"]:
             name = strat_config["name"]
             params = strat_config["params"]
+
+            if name in avoid_strategies:
+                logger.debug(f"  Skipping {name} — avoided in {regime_info['regime']} regime")
+                continue
 
             if name == "momentum_reversal":
                 result = self._check_momentum_reversal(df, params)
@@ -295,6 +311,8 @@ class SignalGenerator:
                     "bb_pct_b": latest["bb_pct_b"],
                     "volume_ratio": latest["volume_ratio"],
                     "adx": latest["adx"],
+                    "regime": regime_info["regime"],
+                    "regime_confidence": regime_info["confidence"],
                     "timestamp": datetime.now(timezone.utc).strftime(
                         "%Y-%m-%d %H:%M:%S UTC"
                     ),
@@ -326,6 +344,8 @@ class SignalGenerator:
             "bb_pct_b": latest["bb_pct_b"],
             "volume_ratio": latest["volume_ratio"],
             "adx": latest["adx"],
+            "regime": regime_info["regime"],
+            "regime_confidence": regime_info["confidence"],
             "timestamp": datetime.now(timezone.utc).strftime(
                 "%Y-%m-%d %H:%M:%S UTC"
             ),

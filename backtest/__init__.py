@@ -152,18 +152,14 @@ class BacktestEngine:
         # Annualized metrics
         n_periods = len(returns)
         # Determine annualization factor from data frequency
-        if hasattr(df.index, 'freq') and df.index.freq:
-            freq = df.index.freq
+        median_diff = df.index.to_series().diff().median()
+        hours = median_diff.total_seconds() / 3600
+        if hours <= 1.5:
+            periods_per_year = 365 * 24  # 1H
+        elif hours <= 5:
+            periods_per_year = 365 * 6   # 4H
         else:
-            # Estimate from median time diff
-            median_diff = df.index.to_series().diff().median()
-            hours = median_diff.total_seconds() / 3600
-            if hours <= 1.5:
-                periods_per_year = 365 * 24  # 1H
-            elif hours <= 5:
-                periods_per_year = 365 * 6   # 4H
-            else:
-                periods_per_year = 365       # 1D
+            periods_per_year = 365       # 1D
 
         ann_return = (1 + total_return) ** (periods_per_year / n_periods) - 1
         ann_vol = returns.std() * np.sqrt(periods_per_year)

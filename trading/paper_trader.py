@@ -121,7 +121,9 @@ class PaperTrader:
             print(f"  {symbol} @ ${sig['close']:,.4f}")
             print(f"  ROC(10)={sig['roc_10']:.2f} | RSI={sig['rsi']:.1f} | "
                   f"Vol Ratio={sig['volume_ratio']:.2f}")
-            print(f"  Signal: {sig['reason']}")
+            regime = sig.get('regime', 'unknown')
+            regime_conf = sig.get('regime_confidence', 0)
+            print(f"  Regime: {regime} ({regime_conf:.0%}) | Signal: {sig['reason']}")
 
             # ── Entry Logic (with on-chain + correlation filter) ──
             if signal_val != 0 and not has_position:
@@ -166,27 +168,6 @@ class PaperTrader:
                 )
                 print(f"\n  {emoji} OPENED {direction}: ${sizing['size_usdt']:.2f} "
                       f"(confidence={enhanced['confidence']:.0%})")
-                send_telegram(msg)
-
-                # SHORT signal
-                pos = self.risk_mgr.open_position(
-                    symbol=symbol,
-                    side="short",
-                    entry_price=sig["close"],
-                    stop_loss_pct=sig["stop_loss"],
-                )
-                sizing = self.risk_mgr.calculate_position_size(
-                    symbol, sig["close"], sig["stop_loss"]
-                )
-
-                msg = (
-                    f"🔴 <b>SHORT {symbol}</b>\n"
-                    f"Entry: ${sig['close']:,.4f}\n"
-                    f"Size: ${sizing['size_usdt']:.2f} ({sizing['capital_pct']:.1f}%)\n"
-                    f"Stop: ${sizing['stop_price']:,.4f} (+{sig['stop_loss']:.0%})\n"
-                    f"Reason: {sig['reason']}"
-                )
-                print(f"\n  🔴 OPENED SHORT: ${sizing['size_usdt']:.2f}")
                 send_telegram(msg)
 
             # ── Exit Logic ──
