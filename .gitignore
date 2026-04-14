@@ -34,6 +34,15 @@ data/*.sqlite
 .idea/
 *.swp
 *.swo
+.claude/
+
+# --- Temp files ---
+*.tmp.*
+
+# --- State files ---
+trading/state.json
+trading/futures_state.json
+logs/signal_history.jsonl
 
 # --- OS ---
 .DS_Store

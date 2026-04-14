@@ -25,12 +25,14 @@ Usage:
 """
 
 import argparse
+import json
 import time
 import os
 import sys
 sys.path.insert(0, ".")
 
 from datetime import datetime, timezone
+from pathlib import Path
 from loguru import logger
 
 from config.settings import LOG_FILE, UPDATE_INTERVAL_HOURS
@@ -41,6 +43,8 @@ from utils.telegram import TelegramAlert
 
 logger.add(LOG_FILE, rotation="10 MB", level="INFO")
 
+SIGNAL_LOG_FILE = Path("logs/signal_history.jsonl")
+
 
 class PaperTrader:
     """Automated paper trading bot."""
@@ -50,7 +54,43 @@ class PaperTrader:
         self.risk_mgr = RiskManager()
         self.onchain_filter = OnchainSignalFilter()
         self.tg = TelegramAlert()
+        self._last_daily_report = None
         logger.info("PaperTrader initialized (with on-chain filter + Telegram).")
+
+    def log_signal(self, signal, action, reason="", blocked_reason=""):
+        """Write a signal event as a JSON line to SIGNAL_LOG_FILE."""
+        SIGNAL_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "symbol": signal.get("symbol", ""),
+            "signal": signal.get("signal", 0),
+            "strategy": signal.get("strategy", ""),
+            "action": action,
+            "price": signal.get("close", 0),
+            "reason": reason,
+            "blocked_reason": blocked_reason,
+        }
+        with open(SIGNAL_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def send_daily_report(self):
+        """Send a daily report at 08:00 UTC (once per day)."""
+        now = datetime.now(timezone.utc)
+        today_key = now.strftime("%Y-%m-%d")
+        if now.hour >= 8 and self._last_daily_report != today_key:
+            self._last_daily_report = today_key
+            current_prices = {}
+            for symbol in ALPHA_CONFIGS:
+                try:
+                    ticker = self.signal_gen.exchange.fetch_ticker(symbol)
+                    current_prices[symbol] = ticker["last"]
+                except Exception as e:
+                    logger.error(f"Daily report: failed to fetch {symbol}: {e}")
+            try:
+                self.tg.send_daily_report(self.risk_mgr.state, current_prices)
+                logger.info("Daily report sent.")
+            except Exception as e:
+                logger.error(f"Failed to send daily report: {e}")
         
     def check_and_trade(self):
         """Main loop iteration: check signals, manage positions, execute trades."""
@@ -75,10 +115,24 @@ class PaperTrader:
             except Exception as e:
                 logger.error(f"Failed to fetch price for {symbol}: {e}")
 
-        stopped = self.risk_mgr.check_stop_losses(current_prices)
+        stopped = self.risk_mgr.check_stops_and_tp(current_prices)
         for trade in stopped:
-            print(f"\n🛑 STOP-LOSS: {trade['symbol']} PnL={trade['pnl_pct']:+.2f}%")
-            self.tg.send_stop_loss(trade["symbol"], trade["pnl_pct"], trade["pnl_usd"])
+            tp_reason = trade.get("reason", "stop_loss")
+            if tp_reason == "take_profit_1":
+                print(f"\n🎯 TAKE-PROFIT-1: {trade['symbol']} PnL={trade['pnl_pct']:+.2f}%")
+                self.tg.send(
+                    f"🎯 <b>Take-Profit-1 hit</b>\n"
+                    f"{trade['symbol']} PnL={trade['pnl_pct']:+.2f}% (${trade['pnl_usd']:+.2f})"
+                )
+            elif tp_reason == "take_profit_2":
+                print(f"\n🎯🎯 TAKE-PROFIT-2: {trade['symbol']} PnL={trade['pnl_pct']:+.2f}%")
+                self.tg.send(
+                    f"🎯🎯 <b>Take-Profit-2 hit</b>\n"
+                    f"{trade['symbol']} PnL={trade['pnl_pct']:+.2f}% (${trade['pnl_usd']:+.2f})"
+                )
+            else:
+                print(f"\n🛑 STOP-LOSS: {trade['symbol']} PnL={trade['pnl_pct']:+.2f}%")
+                self.tg.send_stop_loss(trade["symbol"], trade["pnl_pct"], trade["pnl_usd"])
 
         # ── Step 3: Get on-chain regime ──
         regime = self.onchain_filter.get_current_regime()
@@ -108,6 +162,7 @@ class PaperTrader:
                 can_open, corr_reason = self.risk_mgr.can_trade(symbol=symbol)
                 if not can_open:
                     print(f"  ⛔ {corr_reason}")
+                    self.log_signal(sig, "blocked", reason=sig.get("reason", ""), blocked_reason=corr_reason)
                     continue
 
                 # Check on-chain filter
@@ -117,6 +172,7 @@ class PaperTrader:
                 if enhanced["enhanced_signal"] == 0:
                     # Signal blocked by on-chain
                     print(f"  ⛔ Trade BLOCKED by on-chain filter")
+                    self.log_signal(sig, "blocked", reason=sig.get("reason", ""), blocked_reason="on-chain filter")
                     continue
 
                 side = "long" if signal_val == 1 else "short"
@@ -154,6 +210,7 @@ class PaperTrader:
                     regime=sig.get("regime", ""),
                     confidence=enhanced.get("confidence", 0),
                 )
+                self.log_signal(sig, "opened", reason=sig.get("reason", ""))
 
             # ── Exit Logic ──
             elif signal_val == 0 and has_position:
@@ -172,6 +229,7 @@ class PaperTrader:
                         reason=sig["reason"],
                         capital=self.risk_mgr.state["capital"],
                     )
+                    self.log_signal(sig, "closed", reason=sig.get("reason", ""))
 
             elif has_position:
                 pos = self.risk_mgr.state["open_positions"][symbol]
@@ -179,14 +237,16 @@ class PaperTrader:
                 if pos["side"] == "short":
                     unrealized = -unrealized
                 print(f"  📊 Holding {pos['side']} — Unrealized: {unrealized*100:+.2f}%")
+                self.log_signal(sig, "no_action", reason="holding")
 
             else:
                 print(f"  ⚪ No action")
+                self.log_signal(sig, "no_action", reason="no signal")
 
         # Print summary
         print(f"\n{self.risk_mgr.get_summary()}")
 
-    def run_continuous(self, interval_hours: int = 4):
+    def run_continuous(self, interval_hours: float = 4):
         """Run bot continuously, checking every N hours."""
         print("\n" + "=" * 50)
         print("  PAPER TRADING BOT STARTED")
@@ -197,20 +257,55 @@ class PaperTrader:
 
         self.tg.send_bot_started(list(ALPHA_CONFIGS.keys()))
 
-        while True:
-            try:
-                self.check_and_trade()
-                logger.info(f"Sleeping {interval_hours}h until next check...")
-                print(f"\n⏳ Next check in {interval_hours} hours... (Ctrl+C to stop)")
-                time.sleep(interval_hours * 3600)
-            except KeyboardInterrupt:
-                print("\n\n🛑 Bot stopped by user.")
-                self.tg.send_bot_stopped()
-                break
-            except Exception as e:
-                logger.error(f"Error in main loop: {e}")
-                print(f"\n⚠️ Error: {e}. Retrying in 60s...")
-                time.sleep(60)
+        # Start Telegram command listener
+        try:
+            self.tg.start_command_listener(
+                state_getter=lambda: self.risk_mgr.state,
+                price_getter=lambda: {
+                    s: self.signal_gen.exchange.fetch_ticker(s)["last"]
+                    for s in ALPHA_CONFIGS
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Telegram command listener not started: {e}")
+
+        consecutive_errors = 0
+        try:
+            while True:
+                try:
+                    # Update data at start of each loop
+                    try:
+                        self.signal_gen.update_data()
+                    except Exception as e:
+                        logger.warning(f"Data update failed: {e}")
+
+                    self.check_and_trade()
+                    self.send_daily_report()
+                    consecutive_errors = 0
+
+                    logger.info(f"Sleeping {interval_hours}h until next check...")
+                    print(f"\n⏳ Next check in {interval_hours} hours... (Ctrl+C to stop)")
+                    time.sleep(interval_hours * 3600)
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    consecutive_errors += 1
+                    logger.error(f"Error in main loop ({consecutive_errors}x): {e}")
+                    print(f"\n⚠️ Error: {e}. Retrying in 60s...")
+                    if consecutive_errors >= 5:
+                        self.tg.send(
+                            f"🚨 <b>Bot alert</b>\n"
+                            f"{consecutive_errors} consecutive errors!\n"
+                            f"Last: {e}"
+                        )
+                    time.sleep(60)
+        except KeyboardInterrupt:
+            print("\n\n🛑 Bot stopped by user.")
+            self.tg.send_bot_stopped()
+        except Exception as e:
+            logger.critical(f"Bot crashed: {e}")
+            self.tg.send(f"💀 <b>Bot CRASHED</b>\n{e}")
+            raise
 
     def show_status(self):
         """Show current trading status."""
@@ -247,17 +342,48 @@ class PaperTrader:
         print("=" * 70)
 
 
+def _show_signal_log(limit=50):
+    """Display recent entries from the signal history log."""
+    if not SIGNAL_LOG_FILE.exists():
+        print("No signal log found.")
+        return
+
+    lines = SIGNAL_LOG_FILE.read_text(encoding="utf-8").strip().splitlines()
+    entries = [json.loads(line) for line in lines[-limit:]]
+
+    print("\n" + "=" * 90)
+    print("  SIGNAL HISTORY (last {} entries)".format(len(entries)))
+    print("=" * 90)
+    print(f"  {'Timestamp':<22} {'Symbol':<12} {'Sig':>4} {'Action':<10} {'Price':>12} {'Reason':<20} {'Blocked':<15}")
+    print(f"  {'─'*90}")
+    for e in entries:
+        ts = e.get("timestamp", "")[:19]
+        print(
+            f"  {ts:<22} {e.get('symbol',''):<12} {e.get('signal',0):>4} "
+            f"{e.get('action',''):<10} ${e.get('price',0):>11,.4f} "
+            f"{e.get('reason',''):<20} {e.get('blocked_reason',''):<15}"
+        )
+    print("=" * 90)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Crypto Alpha — Paper Trading Bot")
     parser.add_argument("--once", action="store_true", help="Check signals once and exit")
     parser.add_argument("--run", action="store_true", help="Run continuously (every 4h)")
     parser.add_argument("--status", action="store_true", help="Show current status")
     parser.add_argument("--history", action="store_true", help="Show trade history")
+    parser.add_argument("--signal-log", action="store_true", help="Show signal history log")
+    parser.add_argument("--daily-report", action="store_true", help="Send daily report now")
     parser.add_argument("--reset", action="store_true", help="Reset all trading state")
     parser.add_argument("--test-telegram", action="store_true", help="Test Telegram connection")
-    parser.add_argument("--interval", type=int, default=4, help="Check interval in hours")
+    parser.add_argument("--interval", type=float, default=4, help="Check interval in hours (e.g. 0.5 = 30min)")
 
     args = parser.parse_args()
+
+    if args.signal_log:
+        _show_signal_log()
+        return
+
     bot = PaperTrader()
 
     if args.test_telegram:
@@ -266,6 +392,12 @@ def main():
         else:
             print("✗ Telegram not configured or connection failed.")
             print("  Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env")
+        return
+
+    if args.daily_report:
+        bot._last_daily_report = None
+        bot.send_daily_report()
+        print("Daily report sent (if Telegram configured).")
         return
 
     if args.once:
@@ -286,10 +418,12 @@ def main():
     else:
         parser.print_help()
         print("\nExamples:")
-        print("  python -m trading.paper_trader --once      # Check signals now")
-        print("  python -m trading.paper_trader --run        # Run 24/7 bot")
-        print("  python -m trading.paper_trader --status     # Current state")
-        print("  python -m trading.paper_trader --history    # Trade log")
+        print("  python -m trading.paper_trader --once        # Check signals now")
+        print("  python -m trading.paper_trader --run         # Run 24/7 bot")
+        print("  python -m trading.paper_trader --status      # Current state")
+        print("  python -m trading.paper_trader --history     # Trade log")
+        print("  python -m trading.paper_trader --signal-log  # Signal history")
+        print("  python -m trading.paper_trader --daily-report # Force daily report")
 
 
 if __name__ == "__main__":

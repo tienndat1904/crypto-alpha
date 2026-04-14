@@ -1,11 +1,11 @@
 """
-Signal Generator v2 — Expanded Alpha Signals
+Signal Generator v3 — Expanded Alpha Signals
 ===============================================
-Two strategies running on 5 coins:
+Two strategies running on 10 coins:
   1. Momentum Reversal (relaxed params) — contrarian, fewer but high-quality trades
   2. Volatility Breakout (new) — trend-continuation, more frequent trades
 
-Universe: BTC, ETH, BNB, SOL, XRP
+Universe: BTC, ETH, BNB, SOL, XRP, NEAR, LINK, INJ, UNI, LTC
 
 Usage:
     from trading.signal_generator import SignalGenerator
@@ -150,6 +150,126 @@ ALPHA_CONFIGS = {
         "timeframe": "4h",
         "lookback_candles": 250,
     },
+    "NEAR/USDT": {
+        "strategies": [
+            {
+                "name": "momentum_reversal",
+                "params": {
+                    "roc_threshold": -10.0,
+                    "roc_exit": 3.0,
+                    "support_buffer": 0.05,
+                },
+                "stop_loss": 0.03,
+            },
+            {
+                "name": "volatility_breakout",
+                "params": {
+                    "atr_multiplier": 1.5,
+                    "volume_threshold": 1.5,
+                    "holding_periods": 6,
+                },
+                "stop_loss": 0.04,
+            },
+        ],
+        "timeframe": "4h",
+        "lookback_candles": 250,
+    },
+    "LINK/USDT": {
+        "strategies": [
+            {
+                "name": "momentum_reversal",
+                "params": {
+                    "roc_threshold": -8.0,
+                    "roc_exit": 3.0,
+                    "support_buffer": 0.05,
+                },
+                "stop_loss": 0.03,
+            },
+            {
+                "name": "volatility_breakout",
+                "params": {
+                    "atr_multiplier": 1.5,
+                    "volume_threshold": 1.5,
+                    "holding_periods": 6,
+                },
+                "stop_loss": 0.04,
+            },
+        ],
+        "timeframe": "4h",
+        "lookback_candles": 250,
+    },
+    "INJ/USDT": {
+        "strategies": [
+            {
+                "name": "momentum_reversal",
+                "params": {
+                    "roc_threshold": -10.0,
+                    "roc_exit": 3.0,
+                    "support_buffer": 0.05,
+                },
+                "stop_loss": 0.03,
+            },
+            {
+                "name": "volatility_breakout",
+                "params": {
+                    "atr_multiplier": 1.5,
+                    "volume_threshold": 1.5,
+                    "holding_periods": 6,
+                },
+                "stop_loss": 0.04,
+            },
+        ],
+        "timeframe": "4h",
+        "lookback_candles": 250,
+    },
+    "UNI/USDT": {
+        "strategies": [
+            {
+                "name": "momentum_reversal",
+                "params": {
+                    "roc_threshold": -8.0,
+                    "roc_exit": 3.0,
+                    "support_buffer": 0.05,
+                },
+                "stop_loss": 0.03,
+            },
+            {
+                "name": "volatility_breakout",
+                "params": {
+                    "atr_multiplier": 1.5,
+                    "volume_threshold": 1.5,
+                    "holding_periods": 6,
+                },
+                "stop_loss": 0.04,
+            },
+        ],
+        "timeframe": "4h",
+        "lookback_candles": 250,
+    },
+    "LTC/USDT": {
+        "strategies": [
+            {
+                "name": "momentum_reversal",
+                "params": {
+                    "roc_threshold": -8.0,
+                    "roc_exit": 3.0,
+                    "support_buffer": 0.05,
+                },
+                "stop_loss": 0.03,
+            },
+            {
+                "name": "volatility_breakout",
+                "params": {
+                    "atr_multiplier": 2.0,
+                    "volume_threshold": 1.5,
+                    "holding_periods": 6,
+                },
+                "stop_loss": 0.04,
+            },
+        ],
+        "timeframe": "4h",
+        "lookback_candles": 250,
+    },
 }
 
 
@@ -163,7 +283,7 @@ class SignalGenerator:
         })
         self.regime_detector = RegimeDetector()
         self.mtf_strategy = MultiTimeframeStrategy()
-        logger.info("SignalGenerator v3 initialized (5 coins, 3 strategies, regime + MTF).")
+        logger.info(f"SignalGenerator v3 initialized ({len(ALPHA_CONFIGS)} coins, 3 strategies, regime + MTF).")
 
     def fetch_latest(self, symbol: str, timeframe: str, limit: int = 250) -> pd.DataFrame:
         """Fetch latest candles from Binance."""
@@ -426,7 +546,7 @@ if __name__ == "__main__":
     signals = sg.generate_all()
 
     print("\n" + "=" * 65)
-    print("  CURRENT SIGNALS (v2 — 5 coins, 2 strategies)")
+    print(f"  CURRENT SIGNALS (v3 — {len(ALPHA_CONFIGS)} coins, 3 strategies)")
     print("=" * 65)
     for s in signals:
         if s["signal"] == 1:

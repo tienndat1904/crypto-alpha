@@ -191,6 +191,11 @@ class RiskManager:
         """Open a paper position."""
         sizing = self.calculate_position_size(symbol, entry_price, stop_loss_pct)
 
+        # Take-profit levels based on risk distance
+        risk_distance = entry_price * stop_loss_pct
+        tp1_price = round(entry_price + risk_distance * 2, 4)  # 2R
+        tp2_price = round(entry_price + risk_distance * 3, 4)  # 3R
+
         position = {
             "symbol": symbol,
             "side": side,
@@ -201,6 +206,10 @@ class RiskManager:
             "stop_loss_pct": stop_loss_pct,
             "opened_at": datetime.now(timezone.utc).isoformat(),
             "status": "open",
+            "tp1_price": tp1_price,
+            "tp2_price": tp2_price,
+            "tp1_hit": False,
+            "highest_price": entry_price,
         }
 
         self.state["open_positions"][symbol] = position
@@ -217,6 +226,66 @@ class RiskManager:
         )
 
         return position
+
+    def _partial_close(self, symbol: str, pct: float, exit_price: float, reason: str) -> dict:
+        """Close a fraction of an open position.
+
+        Args:
+            symbol: Trading pair symbol.
+            pct: Fraction to close (0.0 - 1.0).
+            exit_price: Current market price for the partial exit.
+            reason: Why the partial close is happening.
+
+        Returns:
+            A trade_record dict for the partial close.
+        """
+        pos = self.state["open_positions"][symbol]
+        entry = pos["entry_price"]
+        partial_size = pos["size_base"] * pct
+        partial_value = pos["size_usdt"] * pct
+
+        # Calculate partial PnL
+        if pos["side"] == "long":
+            partial_pnl = partial_size * (exit_price - entry)
+        else:
+            partial_pnl = partial_size * (entry - exit_price)
+
+        # Deduct exit fee on the partial value
+        exit_fee = partial_value * TRADING_FEE
+        partial_pnl -= exit_fee
+
+        # Return partial value + PnL to capital
+        self.state["capital"] += partial_value + partial_pnl
+
+        # Reduce position size
+        pos["size_base"] = round(pos["size_base"] * (1 - pct), 6)
+        pos["size_usdt"] = round(pos["size_usdt"] * (1 - pct), 2)
+
+        self._save_state()
+
+        pnl_pct = ((exit_price - entry) / entry) if pos["side"] == "long" else ((entry - exit_price) / entry)
+
+        trade_record = {
+            "symbol": symbol,
+            "side": pos["side"],
+            "entry_price": entry,
+            "exit_price": exit_price,
+            "partial_pct": pct,
+            "size_base": round(partial_size, 6),
+            "size_usdt": round(partial_value, 2),
+            "pnl_pct": round(pnl_pct * 100, 3),
+            "pnl_usd": round(partial_pnl, 2),
+            "reason": reason,
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        logger.info(
+            f"PARTIAL CLOSE {symbol} ({pct*100:.0f}%): {reason}, "
+            f"PnL=${partial_pnl:+.2f}, "
+            f"Remaining size={pos['size_base']}"
+        )
+
+        return trade_record
 
     def close_position(self, symbol: str, exit_price: float, reason: str = "signal") -> dict:
         """Close a paper position and record PnL."""
@@ -285,21 +354,73 @@ class RiskManager:
 
         return trade_record
 
-    def check_stop_losses(self, current_prices: dict) -> list:
-        """Check if any open positions hit stop-loss."""
+    def check_stops_and_tp(self, current_prices: dict) -> list:
+        """Check stop-losses, take-profit levels, and trailing stops."""
         closed = []
         for symbol, pos in list(self.state["open_positions"].items()):
             if symbol not in current_prices:
                 continue
 
             price = current_prices[symbol]
+            side = pos["side"]
+            tp1_hit = pos.get("tp1_hit", False)
+            tp1_price = pos.get("tp1_price")
+            tp2_price = pos.get("tp2_price")
 
-            if pos["side"] == "long" and price <= pos["stop_price"]:
+            # Update highest/lowest price tracking
+            if side == "long":
+                if price > pos.get("highest_price", pos["entry_price"]):
+                    pos["highest_price"] = price
+            else:
+                # For shorts, track lowest price (most favorable)
+                lowest = pos.get("highest_price", pos["entry_price"])
+                if price < lowest:
+                    pos["highest_price"] = price
+
+            # ── Take-Profit 2 (3R) ── close remaining 100%
+            if tp1_hit and tp2_price is not None:
+                if (side == "long" and price >= tp2_price) or (side == "short" and price <= tp2_price):
+                    trade = self.close_position(symbol, price, reason="take_profit_2")
+                    if trade:
+                        closed.append(trade)
+                    continue
+
+            # ── Take-Profit 1 (2R) ── partial close 50%
+            if not tp1_hit and tp1_price is not None:
+                if (side == "long" and price >= tp1_price) or (side == "short" and price <= tp1_price):
+                    trade = self._partial_close(symbol, 0.5, price, "take_profit_1")
+                    if trade:
+                        closed.append(trade)
+                    pos["tp1_hit"] = True
+                    # Move stop to breakeven (entry price)
+                    pos["stop_price"] = pos["entry_price"]
+                    self._save_state()
+                    continue
+
+            # ── Trailing stop (active after TP1 hit) ──
+            if tp1_hit:
+                if side == "long":
+                    trailing_stop = pos["highest_price"] * (1 - pos["stop_loss_pct"])
+                    if price <= trailing_stop:
+                        trade = self.close_position(symbol, price, reason="trailing_stop")
+                        if trade:
+                            closed.append(trade)
+                        continue
+                else:
+                    # For short: trail above the lowest price
+                    trailing_stop = pos["highest_price"] * (1 + pos["stop_loss_pct"])
+                    if price >= trailing_stop:
+                        trade = self.close_position(symbol, price, reason="trailing_stop")
+                        if trade:
+                            closed.append(trade)
+                        continue
+
+            # ── Regular stop-loss ──
+            if side == "long" and price <= pos["stop_price"]:
                 trade = self.close_position(symbol, price, reason="stop_loss")
                 if trade:
                     closed.append(trade)
-            elif pos["side"] == "short" and price >= pos["stop_price"] * (2 - 1):
-                # Short stop = entry * (1 + stop_loss_pct)
+            elif side == "short":
                 short_stop = pos["entry_price"] * (1 + pos["stop_loss_pct"])
                 if price >= short_stop:
                     trade = self.close_position(symbol, price, reason="stop_loss")

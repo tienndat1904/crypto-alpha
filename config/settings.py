@@ -100,6 +100,14 @@ TRADING_FEE = 0.001                        # 0.1% maker/taker
 SLIPPAGE_PCT = 0.0005                      # 0.05% estimated slippage per trade
 
 # ═══════════════════════════════════════════
+# FUTURES CONFIG
+# ═══════════════════════════════════════════
+TRADING_MODE = os.getenv("TRADING_MODE", "spot")  # "spot" or "futures"
+FUTURES_LEVERAGE = int(os.getenv("FUTURES_LEVERAGE", "3"))  # Max 3x for safety
+FUTURES_FEE = 0.0004                       # 0.04% maker on futures
+FUTURES_MARGIN_TYPE = "isolated"           # isolated or cross
+
+# ═══════════════════════════════════════════
 # ALPHA RESEARCH CONFIG (Phase 2)
 # ═══════════════════════════════════════════
 MIN_SHARPE_RATIO = 0.5                     # Minimum to keep an alpha
