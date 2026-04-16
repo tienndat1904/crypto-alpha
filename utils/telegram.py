@@ -18,6 +18,9 @@ Usage:
 """
 
 import os
+from datetime import datetime, timezone, timedelta
+
+VN_TZ = timezone(timedelta(hours=7))
 import threading
 import time
 
@@ -133,7 +136,7 @@ class TelegramAlert:
         direction = "LONG" if side == "long" else "SHORT"
 
         msg = (
-            f"{emoji} <b>{direction} {symbol}</b>\n"
+            f"{emoji} <b>[Spot] {direction} {symbol}</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"Entry: <code>${entry_price:,.4f}</code>\n"
             f"Size: <code>${size_usdt:.2f}</code>\n"
@@ -161,7 +164,7 @@ class TelegramAlert:
         emoji = "✅" if pnl_usd > 0 else "❌"
 
         msg = (
-            f"{emoji} <b>CLOSED {symbol}</b>\n"
+            f"{emoji} <b>[Spot] CLOSED {symbol}</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"PnL: <code>{pnl_pct:+.2f}%</code> (<code>${pnl_usd:+.2f}</code>)\n"
         )
@@ -172,19 +175,36 @@ class TelegramAlert:
 
         self.send(msg)
 
-    def send_stop_loss(self, symbol: str, pnl_pct: float, pnl_usd: float):
-        """Send stop-loss alert."""
+    def send_stop_loss(self, symbol: str, pnl_pct: float, pnl_usd: float, reason: str = "stop_loss"):
+        """Send stop-loss or trailing stop alert."""
+        if reason == "trailing_stop":
+            emoji = "📐"
+            label = "TRAILING STOP"
+        else:
+            emoji = "🛑"
+            label = "STOP-LOSS"
         msg = (
-            f"🛑 <b>STOP-LOSS {symbol}</b>\n"
+            f"{emoji} <b>[Spot] {label} {symbol}</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"PnL: <code>{pnl_pct:+.2f}%</code> (<code>${pnl_usd:+.2f}</code>)\n"
         )
         self.send(msg)
 
+    def send_breakeven_alert(self, symbol: str, side: str, entry_price: float):
+        """Send alert when stop is moved to breakeven."""
+        emoji = "🟢" if side == "long" else "🔴"
+        msg = (
+            f"🔒 <b>Breakeven Stop: {symbol}</b>\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"{emoji} {side.upper()} | Entry: <code>${entry_price:,.4f}</code>\n"
+            f"Stop đã dời lên entry (breakeven)\n"
+        )
+        self.send(msg, silent=True)
+
     def send_kill_switch(self, drawdown: float, capital: float):
         """Send kill switch alert."""
         msg = (
-            f"🚨 <b>KILL SWITCH ACTIVATED</b>\n"
+            f"🚨 <b>[Spot] KILL SWITCH ACTIVATED</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"Drawdown: <code>{drawdown:.1%}</code>\n"
             f"Capital: <code>${capital:.2f}</code>\n"
@@ -252,10 +272,10 @@ class TelegramAlert:
         win_rate = total_wins / total_trades * 100 if total_trades > 0 else 0
         loss_count = total_trades - total_wins
 
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+        timestamp = datetime.now(VN_TZ).strftime("%Y-%m-%d %H:%M:%S (VN)")
 
         msg = (
-            f"📋 <b>BÁO CÁO HÀNG NGÀY</b>\n"
+            f"📋 <b>[Spot] BÁO CÁO HÀNG NGÀY</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🕐 {timestamp}\n\n"
             f"💰 <b>Tài khoản:</b>\n"
@@ -295,14 +315,14 @@ class TelegramAlert:
 
     def send_bot_started(self, coins: list, strategies: list = None):
         """Send bot started notification with timestamp and details."""
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+        timestamp = datetime.now(VN_TZ).strftime("%Y-%m-%d %H:%M:%S (VN)")
         if strategies is None:
             strategies = ["MR", "VB", "MTF"]
         strategies_str = ", ".join(strategies)
         coin_count = len(coins)
 
         msg = (
-            f"🤖 <b>Paper Trading Bot Started</b>\n"
+            f"🤖 <b>[Spot] Paper Trading Bot Started</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"🕐 {timestamp}\n"
             f"Coins ({coin_count}): {', '.join(coins)}\n"
@@ -313,9 +333,9 @@ class TelegramAlert:
 
     def send_bot_stopped(self):
         """Send bot stopped notification with timestamp."""
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+        timestamp = datetime.now(VN_TZ).strftime("%Y-%m-%d %H:%M:%S (VN)")
         msg = (
-            f"🛑 <b>Paper Trading Bot Stopped</b>\n"
+            f"🛑 <b>[Spot] Paper Trading Bot Stopped</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"🕐 {timestamp}\n"
         )
@@ -512,8 +532,10 @@ class TelegramAlert:
             side_upper = side.upper()
             entry = pos.get("entry_price", 0)
             size = pos.get("size_usdt", 0)
-            sl = pos.get("stop_loss", 0)
-            tp = pos.get("take_profit", 0)
+            stop_price = pos.get("stop_price", 0)
+            tp1 = pos.get("tp1_price", 0)
+            tp2 = pos.get("tp2_price", 0)
+            tp1_hit = pos.get("tp1_hit", False)
             emoji = "🟢" if side == "long" else "🔴"
 
             # Compute unrealized PnL
@@ -526,14 +548,14 @@ class TelegramAlert:
                     unrealized = (entry - current) / entry * size
                 upnl_str = f"${unrealized:+,.2f}"
 
-            sl_str = f"${sl:,.4f}" if sl else "N/A"
-            tp_str = f"${tp:,.4f}" if tp else "N/A"
+            tp_status = "TP1 hit ✓" if tp1_hit else f"TP1: ${tp1:,.4f}"
 
             msg += (
                 f"\n{emoji} <b>{side_upper} {sym}</b>\n"
                 f"  Entry: <code>${entry:,.4f}</code>\n"
                 f"  Size: <code>${size:.2f}</code>\n"
-                f"  SL: <code>{sl_str}</code> | TP: <code>{tp_str}</code>\n"
+                f"  SL: <code>${stop_price:,.4f}</code>\n"
+                f"  {tp_status} | TP2: <code>${tp2:,.4f}</code>\n"
                 f"  uPnL: <code>{upnl_str}</code>\n"
             )
 
@@ -542,7 +564,7 @@ class TelegramAlert:
     def _cmd_history(self):
         """Handle /history command - show last 10 trades."""
         state = self._state_getter() if self._state_getter else {}
-        trade_log = state.get("trade_log", [])
+        trade_log = state.get("trade_history", [])
 
         if not trade_log:
             self.send("📜 <b>Chưa có giao dịch nào</b>")
@@ -570,7 +592,7 @@ class TelegramAlert:
         total_trades = state.get("total_trades", 0)
         total_wins = state.get("total_wins", 0)
         total_pnl = state.get("total_pnl", 0)
-        trade_log = state.get("trade_log", [])
+        trade_log = state.get("trade_history", [])
 
         if total_trades == 0:
             self.send("📈 <b>Chưa có dữ liệu PnL</b>")

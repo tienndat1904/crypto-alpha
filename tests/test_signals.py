@@ -169,4 +169,4 @@ class TestStrategyRegistry:
             assert callable(info["func"]), f"{key} func not callable"
 
     def test_strategy_count(self):
-        assert len(STRATEGIES) == 5
+        assert len(STRATEGIES) == 8

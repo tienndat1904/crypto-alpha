@@ -221,20 +221,20 @@ class TestPositionManagement:
         assert result is None
 
     def test_stop_loss_check(self, risk_manager):
-        """check_stop_losses should close positions that hit stop."""
+        """check_stops_and_tp should close positions that hit stop."""
         risk_manager.open_position("BTC/USDT", "long", 50000, 0.03)
 
         # Price dropped below stop (50000 * 0.97 = 48500)
-        closed = risk_manager.check_stop_losses({"BTC/USDT": 48000})
+        closed = risk_manager.check_stops_and_tp({"BTC/USDT": 48000})
 
         assert len(closed) == 1
         assert closed[0]["reason"] == "stop_loss"
 
     def test_stop_loss_not_triggered(self, risk_manager):
-        """check_stop_losses should not close if price is above stop."""
+        """check_stops_and_tp should not close if price is above stop."""
         risk_manager.open_position("BTC/USDT", "long", 50000, 0.03)
 
-        closed = risk_manager.check_stop_losses({"BTC/USDT": 49000})
+        closed = risk_manager.check_stops_and_tp({"BTC/USDT": 49000})
 
         assert len(closed) == 0
 

@@ -41,8 +41,9 @@ from config.settings import (
     MAX_RISK_PER_TRADE,
     MAX_POSITIONS,
     MAX_DRAWDOWN,
+    VN_TIMEZONE,
 )
-from trading.signal_generator import SignalGenerator, ALPHA_CONFIGS
+from trading.signal_generator import SignalGenerator, ALPHA_CONFIGS, FUTURES_ALPHA_CONFIGS
 from trading.risk_manager import RiskManager
 from strategies.onchain_alphas import OnchainSignalFilter
 from utils.telegram import TelegramAlert
@@ -82,7 +83,7 @@ class FuturesRiskManager(RiskManager):
         with open(self.state_file, "w") as f:
             json.dump(self.state, f, indent=2, default=str)
 
-    def calculate_position_size(self, symbol, entry_price, stop_loss_pct):
+    def calculate_position_size(self, symbol, entry_price, stop_loss_pct, side="long"):
         """Calculate position size with leverage."""
         capital = self.state["capital"]
         risk_amount = capital * MAX_RISK_PER_TRADE
@@ -106,7 +107,10 @@ class FuturesRiskManager(RiskManager):
             position_value = margin_required * FUTURES_LEVERAGE
             position_size_base = position_value / entry_price
 
-        stop_price = entry_price * (1 - stop_loss_pct)
+        if side == "short":
+            stop_price = entry_price * (1 + stop_loss_pct)
+        else:
+            stop_price = entry_price * (1 - stop_loss_pct)
         fee_cost = position_value * FUTURES_FEE * 2
 
         return {
@@ -123,11 +127,18 @@ class FuturesRiskManager(RiskManager):
             "capital_pct": round(margin_required / capital * 100, 1),
         }
 
-    def open_position(self, symbol, side, entry_price, stop_loss_pct):
+    def open_position(self, symbol, side, entry_price, stop_loss_pct, atr_pct=None, regime=None, strategy=None):
         """Open a futures position (long or short)."""
-        sizing = self.calculate_position_size(symbol, entry_price, stop_loss_pct)
+        # Adjust stop based on regime
+        if regime:
+            actual_stop_pct = self.adjust_stop_loss(stop_loss_pct, regime, atr_pct)
+            logger.info(f"  Stop adjusted: {stop_loss_pct:.1%} -> {actual_stop_pct:.1%} (regime={regime})")
+        else:
+            actual_stop_pct = stop_loss_pct
 
-        risk_distance = entry_price * stop_loss_pct
+        sizing = self.calculate_position_size(symbol, entry_price, actual_stop_pct, side=side)
+
+        risk_distance = entry_price * actual_stop_pct
         if side == "long":
             tp1_price = round(entry_price + risk_distance * 2, 4)
             tp2_price = round(entry_price + risk_distance * 3, 4)
@@ -150,14 +161,18 @@ class FuturesRiskManager(RiskManager):
             "margin": sizing["margin"],
             "leverage": FUTURES_LEVERAGE,
             "stop_price": sizing["stop_price"],
-            "stop_loss_pct": stop_loss_pct,
+            "stop_loss_pct": actual_stop_pct,
+            "base_stop_loss_pct": stop_loss_pct,
+            "regime": regime,
             "tp1_price": tp1_price,
             "tp2_price": tp2_price,
             "tp1_hit": False,
             "liq_price": liq_price,
             "highest_price": entry_price,
             "lowest_price": entry_price,
+            "atr_pct": atr_pct,
             "funding_paid": 0.0,
+            "strategy": strategy or "unknown",
             "opened_at": datetime.now(timezone.utc).isoformat(),
             "status": "open",
             "mode": "futures",
@@ -225,22 +240,32 @@ class FuturesRiskManager(RiskManager):
         # Leveraged return on margin
         roe = pnl_usd / margin * 100 if margin > 0 else 0
 
+        closed_at = datetime.now(timezone.utc)
+        duration_hours = None
+        if pos.get("opened_at"):
+            try:
+                opened_at = datetime.fromisoformat(pos["opened_at"])
+                duration_hours = round((closed_at - opened_at).total_seconds() / 3600, 2)
+            except (ValueError, TypeError):
+                pass
+
         trade_record = {
             **pos,
             "exit_price": exit_price,
             "pnl_pct": round(pnl_pct * 100, 3),
             "pnl_usd": round(pnl_usd, 2),
             "roe": round(roe, 2),  # Return on Equity (leveraged)
+            "duration_hours": duration_hours,
             "reason": reason,
-            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "closed_at": closed_at.isoformat(),
         }
         self.state["trade_history"].append(trade_record)
         del self.state["open_positions"][symbol]
         self._save_state()
 
-        emoji = "✅" if pnl_usd > 0 else "❌"
+        tag = "[WIN]" if pnl_usd > 0 else "[LOSS]"
         logger.info(
-            f"{emoji} CLOSED {symbol} (Futures): {reason}, "
+            f"{tag} CLOSED {symbol} (Futures): {reason}, "
             f"PnL={pnl_pct*100:+.2f}% (${pnl_usd:+.2f}), "
             f"ROE={roe:+.1f}%, Capital=${self.state['capital']:.2f}"
         )
@@ -287,7 +312,7 @@ class FuturesPaperTrader:
     """Futures paper trading bot."""
 
     def __init__(self):
-        self.signal_gen = SignalGenerator()
+        self.signal_gen = SignalGenerator(configs=FUTURES_ALPHA_CONFIGS)
         self.risk_mgr = FuturesRiskManager()
         self.onchain_filter = OnchainSignalFilter()
         self.tg = TelegramAlert()
@@ -296,7 +321,7 @@ class FuturesPaperTrader:
         self._last_daily_report = None
         logger.info(
             f"FuturesPaperTrader initialized. "
-            f"Leverage: {FUTURES_LEVERAGE}x, Coins: {len(ALPHA_CONFIGS)}"
+            f"Leverage: {FUTURES_LEVERAGE}x, Coins: {len(FUTURES_ALPHA_CONFIGS)}"
         )
 
     def update_data(self):
@@ -312,8 +337,8 @@ class FuturesPaperTrader:
             logger.error(f"Data update failed: {e}")
 
     def send_daily_report(self):
-        now = datetime.now(timezone.utc)
-        if now.hour < 8:
+        now = datetime.now(VN_TIMEZONE)
+        if now.hour < 10:
             return
         today = now.strftime("%Y-%m-%d")
         if self._last_daily_report == today:
@@ -331,7 +356,7 @@ class FuturesPaperTrader:
         self._last_daily_report = today
 
     def check_and_trade(self):
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        now = datetime.now(VN_TIMEZONE).strftime("%Y-%m-%d %H:%M (VN)")
         logger.info(f"{'='*50}")
         logger.info(f"[FUTURES] Signal check at {now}")
 
@@ -343,7 +368,7 @@ class FuturesPaperTrader:
 
         # Check stops + take-profits
         current_prices = {}
-        for symbol in ALPHA_CONFIGS:
+        for symbol in FUTURES_ALPHA_CONFIGS:
             try:
                 ticker = self.signal_gen.exchange.fetch_ticker(symbol)
                 current_prices[symbol] = ticker["last"]
@@ -361,13 +386,19 @@ class FuturesPaperTrader:
                     f"(ROE: <code>{roe:+.1f}%</code>)\n"
                     f"(<code>${trade['pnl_usd']:+.2f}</code>)"
                 )
-            else:
+            elif reason == "trailing_stop":
                 self.tg.send(
-                    f"🛑 <b>[Futures] STOP {trade['symbol']}</b>\n"
+                    f"📐 <b>[Futures] TRAILING STOP {trade['symbol']}</b>\n"
                     f"PnL: <code>{trade['pnl_pct']:+.2f}%</code> "
                     f"(ROE: <code>{roe:+.1f}%</code>)\n"
-                    f"(<code>${trade['pnl_usd']:+.2f}</code>)\n"
-                    f"Reason: {reason}"
+                    f"(<code>${trade['pnl_usd']:+.2f}</code>)"
+                )
+            else:
+                self.tg.send(
+                    f"🛑 <b>[Futures] STOP-LOSS {trade['symbol']}</b>\n"
+                    f"PnL: <code>{trade['pnl_pct']:+.2f}%</code> "
+                    f"(ROE: <code>{roe:+.1f}%</code>)\n"
+                    f"(<code>${trade['pnl_usd']:+.2f}</code>)"
                 )
 
         # Get on-chain regime
@@ -381,19 +412,19 @@ class FuturesPaperTrader:
             signal_val = sig["signal"]
             has_position = symbol in self.risk_mgr.state["open_positions"]
 
-            print(f"\n{'─'*50}")
+            print(f"\n{'-'*50}")
             print(f"  [F] {symbol} @ ${sig['close']:,.4f}")
 
             # Entry (both long AND short allowed on futures)
             if signal_val != 0 and not has_position:
                 can_open, corr_reason = self.risk_mgr.can_trade(symbol=symbol)
                 if not can_open:
-                    print(f"  ⛔ {corr_reason}")
+                    print(f"  [BLOCKED] {corr_reason}")
                     continue
 
                 enhanced = self.onchain_filter.enhance_signal(signal_val, symbol)
                 if enhanced["enhanced_signal"] == 0:
-                    print(f"  ⛔ Blocked by on-chain filter")
+                    print(f"  [BLOCKED] Blocked by on-chain filter")
                     continue
 
                 side = "long" if signal_val == 1 else "short"
@@ -401,16 +432,19 @@ class FuturesPaperTrader:
                     symbol=symbol, side=side,
                     entry_price=sig["close"],
                     stop_loss_pct=sig["stop_loss"],
+                    atr_pct=sig.get("atr_pct"),
+                    regime=sig.get("regime"),
+                    strategy=sig.get("strategy", ""),
                 )
                 sizing = self.risk_mgr.calculate_position_size(
-                    symbol, sig["close"], sig["stop_loss"]
+                    symbol, sig["close"], sig["stop_loss"], side=side
                 )
 
-                emoji = "🟢" if side == "long" else "🔴"
                 direction = "LONG" if side == "long" else "SHORT"
+                tg_emoji = "\U0001f7e2" if side == "long" else "\U0001f534"
 
                 self.tg.send(
-                    f"{emoji} <b>[Futures] {direction} {symbol} ({FUTURES_LEVERAGE}x)</b>\n"
+                    f"{tg_emoji} <b>[Futures] {direction} {symbol} ({FUTURES_LEVERAGE}x)</b>\n"
                     f"━━━━━━━━━━━━━━━━\n"
                     f"Entry: <code>${sig['close']:,.4f}</code>\n"
                     f"Notional: <code>${sizing['size_usdt']:.2f}</code>\n"
@@ -420,7 +454,8 @@ class FuturesPaperTrader:
                     f"Strategy: {sig.get('strategy', '')}"
                 )
 
-                print(f"  {emoji} OPENED {direction} {FUTURES_LEVERAGE}x: "
+                tag = "[LONG]" if side == "long" else "[SHORT]"
+                print(f"  {tag} OPENED {direction} {FUTURES_LEVERAGE}x: "
                       f"notional=${sizing['size_usdt']:.2f}, margin=${sizing['margin']:.2f}")
 
             # Exit
@@ -429,11 +464,12 @@ class FuturesPaperTrader:
                     symbol=symbol, exit_price=sig["close"], reason="signal_exit",
                 )
                 if trade:
-                    emoji = "✅" if trade["pnl_usd"] > 0 else "❌"
+                    tag = "[WIN]" if trade["pnl_usd"] > 0 else "[LOSS]"
                     roe = trade.get("roe", 0)
-                    print(f"  {emoji} CLOSED: PnL={trade['pnl_pct']:+.2f}% (ROE={roe:+.1f}%)")
+                    print(f"  {tag} CLOSED: PnL={trade['pnl_pct']:+.2f}% (ROE={roe:+.1f}%)")
+                    tg_emoji = "\u2705" if trade["pnl_usd"] > 0 else "\u274c"
                     self.tg.send(
-                        f"{emoji} <b>[Futures] CLOSED {symbol}</b>\n"
+                        f"{tg_emoji} <b>[Futures] CLOSED {symbol}</b>\n"
                         f"PnL: <code>{trade['pnl_pct']:+.2f}%</code> "
                         f"(ROE: <code>{roe:+.1f}%</code>)\n"
                         f"(<code>${trade['pnl_usd']:+.2f}</code>)"
@@ -445,11 +481,11 @@ class FuturesPaperTrader:
                 if pos["side"] == "short":
                     unrealized = -unrealized
                 roe = unrealized * FUTURES_LEVERAGE * 100
-                print(f"  📊 Holding {pos['side']} {FUTURES_LEVERAGE}x — "
+                print(f"  [HOLD] Holding {pos['side']} {FUTURES_LEVERAGE}x -- "
                       f"Unrealized: {unrealized*100:+.2f}% (ROE: {roe:+.1f}%)")
 
             else:
-                print(f"  ⚪ No action")
+                print(f"  [--] No action")
 
         print(f"\n{self.risk_mgr.get_summary()}")
 
@@ -458,7 +494,7 @@ class FuturesPaperTrader:
         print("  FUTURES PAPER TRADING BOT STARTED")
         print(f"  Leverage: {FUTURES_LEVERAGE}x | Margin: {FUTURES_MARGIN_TYPE}")
         print(f"  Checking every {interval_hours} hours")
-        print(f"  Coins: {', '.join(ALPHA_CONFIGS.keys())}")
+        print(f"  Coins: {', '.join(FUTURES_ALPHA_CONFIGS.keys())}")
         print(f"  Press Ctrl+C to stop")
         print("=" * 55)
 
@@ -467,7 +503,7 @@ class FuturesPaperTrader:
             f"━━━━━━━━━━━━━━━━\n"
             f"Leverage: {FUTURES_LEVERAGE}x\n"
             f"Margin: {FUTURES_MARGIN_TYPE}\n"
-            f"Coins: {len(ALPHA_CONFIGS)}\n"
+            f"Coins: {len(FUTURES_ALPHA_CONFIGS)}\n"
             f"Interval: {interval_hours}h"
         )
 
@@ -477,7 +513,7 @@ class FuturesPaperTrader:
 
         def get_prices():
             prices = {}
-            for symbol in ALPHA_CONFIGS:
+            for symbol in FUTURES_ALPHA_CONFIGS:
                 try:
                     ticker = self.signal_gen.exchange.fetch_ticker(symbol)
                     prices[symbol] = ticker["last"]
@@ -485,7 +521,30 @@ class FuturesPaperTrader:
                     pass
             return prices
 
-        self.tg.start_command_listener(get_state, get_prices)
+        # Only start Telegram listener if spot bot is NOT running
+        # (both polling getUpdates causes conflict — messages get "eaten")
+        spot_state = Path("trading/state.json")
+        spot_running = False
+        if spot_state.exists():
+            try:
+                import psutil
+                # Check if paper_trader process is running
+                for proc in psutil.process_iter(["cmdline"]):
+                    cmdline = " ".join(proc.info.get("cmdline") or [])
+                    if "paper_trader" in cmdline and "futures" not in cmdline:
+                        spot_running = True
+                        break
+            except ImportError:
+                pass
+
+        if spot_running:
+            logger.warning(
+                "Spot bot detected — Telegram listener DISABLED for futures "
+                "(use spot bot for commands to avoid conflict)"
+            )
+            print("  [!] Telegram commands handled by spot bot (no conflict)")
+        else:
+            self.tg.start_command_listener(get_state, get_prices)
 
         error_count = 0
         try:
@@ -496,7 +555,7 @@ class FuturesPaperTrader:
                     self.check_and_trade()
                     error_count = 0
                     logger.info(f"Sleeping {interval_hours}h until next check...")
-                    print(f"\n⏳ Next check in {interval_hours} hours...")
+                    print(f"\n[...] Next check in {interval_hours} hours...")
                     time.sleep(interval_hours * 3600)
                 except KeyboardInterrupt:
                     raise
@@ -511,12 +570,12 @@ class FuturesPaperTrader:
                         error_count = 0
                     time.sleep(60)
         except KeyboardInterrupt:
-            print("\n\n🛑 Futures bot stopped.")
+            print("\n\n[STOP] Futures bot stopped.")
             self.tg.stop_command_listener()
-            self.tg.send("🔴 <b>[Futures] Bot STOPPED</b>")
+            self.tg.send("\U0001f534 <b>[Futures] Bot STOPPED</b>")
         except Exception as e:
             self.tg.stop_command_listener()
-            self.tg.send(f"💀 <b>[Futures] Bot CRASHED!</b>\n<code>{str(e)[:300]}</code>")
+            self.tg.send("\U0001f480 <b>[Futures] Bot CRASHED!</b>\n<code>{}</code>".format(str(e)[:300]))
             raise
 
     def show_status(self):
@@ -533,21 +592,21 @@ class FuturesPaperTrader:
         print(f"{'=' * 80}")
         print(f"  {'#':<4} {'Symbol':<12} {'Side':<6} {'Lev':>4} {'Entry':>10} {'Exit':>10} "
               f"{'PnL %':>8} {'ROE %':>8} {'PnL $':>8}")
-        print(f"  {'─'*78}")
+        print(f"  {'-'*78}")
 
         total_pnl = 0
         for i, tr in enumerate(history, 1):
             total_pnl += tr["pnl_usd"]
-            emoji = "✅" if tr["pnl_usd"] > 0 else "❌"
+            tag = "[W]" if tr["pnl_usd"] > 0 else "[L]"
             lev = tr.get("leverage", FUTURES_LEVERAGE)
             roe = tr.get("roe", 0)
             print(
-                f"  {emoji}{i:<3} {tr['symbol']:<12} {tr['side']:<6} {lev:>3}x "
+                f"  {tag}{i:<3} {tr['symbol']:<12} {tr['side']:<6} {lev:>3}x "
                 f"${tr['entry_price']:>9.4f} ${tr['exit_price']:>9.4f} "
                 f"{tr['pnl_pct']:>+7.2f}% {roe:>+7.1f}% ${tr['pnl_usd']:>+7.2f}"
             )
 
-        print(f"  {'─'*78}")
+        print(f"  {'-'*78}")
         print(f"  Total PnL: ${total_pnl:+.2f}")
         print(f"  Capital: ${self.risk_mgr.state['capital']:.2f}")
         print(f"{'=' * 80}")
@@ -574,10 +633,10 @@ def main():
     elif args.history:
         bot.show_history()
     elif args.reset:
-        confirm = input("⚠️  Reset all futures state? (yes/no): ")
+        confirm = input("[WARNING] Reset all futures state? (yes/no): ")
         if confirm.lower() == "yes":
             bot.risk_mgr.reset()
-            print("✓ Futures state reset.")
+            print("[OK] Futures state reset.")
     else:
         parser.print_help()
         print("\nExamples:")

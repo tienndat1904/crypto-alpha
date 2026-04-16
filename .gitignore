@@ -44,6 +44,12 @@ trading/state.json
 trading/futures_state.json
 logs/signal_history.jsonl
 
+# --- Screenshots ---
+dashboard_*.png
+
+# --- Playwright ---
+.playwright-mcp/
+
 # --- OS ---
 .DS_Store
 Thumbs.db

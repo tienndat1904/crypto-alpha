@@ -3,6 +3,7 @@ Technical Alpha Strategies
 ===========================
 5 alpha strategies based on EDA insights from Phase 1.
 Each returns a signal Series: 1 = long, -1 = short, 0 = flat.
+Use make_long_only() to convert any strategy to long-only (spot).
 
 Strategies:
 1. Mean-Reversion (RSI + Bollinger Bands)
@@ -15,6 +16,11 @@ Strategies:
 import numpy as np
 import pandas as pd
 from utils.indicators import add_all_indicators
+
+
+def make_long_only(signals: pd.Series) -> pd.Series:
+    """Convert signals to long-only: -1 (short) becomes 0 (exit)."""
+    return signals.clip(lower=0)
 
 
 def ensure_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -255,6 +261,43 @@ def alpha_composite(
 
 
 # ═══════════════════════════════════════════
+# MTF DAILY TREND FILTER (for backtest)
+# ═══════════════════════════════════════════
+
+def _apply_daily_trend_filter(df: pd.DataFrame, signals: pd.Series) -> pd.Series:
+    """
+    Apply a daily-trend filter to backtest signals.
+
+    For 4H data we approximate the daily trend using longer-period EMAs
+    already present in the DataFrame (from add_all_indicators):
+      - Bullish (1):  ema_50 > sma_200 AND close > ema_50
+      - Bearish (-1): ema_50 < sma_200 AND close < ema_50
+      - Neutral (0):  otherwise  (all signals pass through)
+
+    Filtering logic:
+      - Bullish  trend → keep longs (1), zero out shorts (-1)
+      - Bearish  trend → keep shorts (-1), zero out longs (1)
+      - Neutral  trend → allow all signals
+    """
+    df = ensure_indicators(df)
+
+    bullish = (df["ema_50"] > df["sma_200"]) & (df["close"] > df["ema_50"])
+    bearish = (df["ema_50"] < df["sma_200"]) & (df["close"] < df["ema_50"])
+
+    trend = pd.Series(0, index=df.index, dtype=int)
+    trend[bullish] = 1
+    trend[bearish] = -1
+
+    filtered = signals.copy()
+    # In bullish regime, zero out short signals
+    filtered[(trend == 1) & (signals == -1)] = 0
+    # In bearish regime, zero out long signals
+    filtered[(trend == -1) & (signals == 1)] = 0
+
+    return filtered
+
+
+# ═══════════════════════════════════════════
 # STRATEGY REGISTRY
 # ═══════════════════════════════════════════
 
@@ -283,6 +326,69 @@ STRATEGIES = {
         "func": alpha_composite,
         "name": "Composite Signal",
         "description": "Weighted combination of all strategies",
+    },
+    # ── MTF-filtered variants ──
+    "momentum_reversal_mtf": {
+        "func": lambda df: _apply_daily_trend_filter(df, alpha_momentum_reversal(df)),
+        "name": "Momentum Reversal + MTF Filter",
+        "description": "Momentum reversal filtered by daily trend bias",
+    },
+    "volatility_breakout_mtf": {
+        "func": lambda df: _apply_daily_trend_filter(df, alpha_volatility_breakout(df)),
+        "name": "Volatility Breakout + MTF Filter",
+        "description": "Volatility breakout filtered by daily trend bias",
+    },
+    "composite_mtf": {
+        "func": lambda df: _apply_daily_trend_filter(df, alpha_composite(df)),
+        "name": "Composite Signal + MTF Filter",
+        "description": "Composite signal filtered by daily trend bias",
+    },
+}
+
+# ═══════════════════════════════════════════
+# SPOT STRATEGIES (Long-only)
+# ═══════════════════════════════════════════
+
+SPOT_STRATEGIES = {
+    "mean_reversion": {
+        "func": lambda df: make_long_only(alpha_mean_reversion(df)),
+        "name": "Mean-Reversion Long-Only",
+        "description": "Buy oversold + lower BB, exit when overbought",
+    },
+    "volatility_breakout": {
+        "func": lambda df: make_long_only(alpha_volatility_breakout(df)),
+        "name": "Volatility Breakout Long-Only",
+        "description": "Buy on upside ATR breakout with volume, ignore downside",
+    },
+    "trend_following": {
+        "func": lambda df: make_long_only(alpha_trend_following(df)),
+        "name": "Trend-Following Long-Only",
+        "description": "Buy on EMA golden cross + ADX, exit on death cross",
+    },
+    "momentum_reversal": {
+        "func": lambda df: make_long_only(alpha_momentum_reversal(df)),
+        "name": "Momentum Reversal Long-Only",
+        "description": "Buy on extreme dip near support, exit on recovery",
+    },
+    "composite": {
+        "func": lambda df: make_long_only(alpha_composite(df)),
+        "name": "Composite Long-Only",
+        "description": "Weighted combination, long entries only",
+    },
+    "momentum_reversal_mtf": {
+        "func": lambda df: make_long_only(_apply_daily_trend_filter(df, alpha_momentum_reversal(df))),
+        "name": "Momentum Reversal + MTF Long-Only",
+        "description": "Momentum reversal with daily trend filter, long only",
+    },
+    "volatility_breakout_mtf": {
+        "func": lambda df: make_long_only(_apply_daily_trend_filter(df, alpha_volatility_breakout(df))),
+        "name": "Volatility Breakout + MTF Long-Only",
+        "description": "Volatility breakout with daily trend filter, long only",
+    },
+    "composite_mtf": {
+        "func": lambda df: make_long_only(_apply_daily_trend_filter(df, alpha_composite(df))),
+        "name": "Composite + MTF Long-Only",
+        "description": "Composite with daily trend filter, long only",
     },
 }
 

@@ -40,6 +40,11 @@ PARAM_GRIDS = {
         "w_vb": [0.1, 0.2, 0.3],
         "threshold": [0.15, 0.25, 0.35, 0.45],
     },
+    "momentum_reversal_mtf": {
+        "roc_threshold": [-5, -8, -10, -12, -15],
+        "roc_exit": [1, 2, 3, 5],
+        "support_buffer": [0.02, 0.05, 0.08, 0.12],
+    },
 }
 
 STOP_LOSS_GRID = [0.03, 0.04, 0.05, 0.07]
@@ -127,10 +132,32 @@ def _signal_composite(df, w_mr, w_vb, threshold):
     return signal
 
 
+def _signal_momentum_reversal_mtf(df, roc_threshold, roc_exit, support_buffer):
+    """Momentum reversal filtered by daily trend bias (MTF)."""
+    # Get base signals
+    base_signals = _signal_momentum_reversal(df, roc_threshold, roc_exit, support_buffer)
+
+    # Compute daily trend from longer-period indicators
+    bullish = (df["ema_50"] > df["sma_200"]) & (df["close"] > df["ema_50"])
+    bearish = (df["ema_50"] < df["sma_200"]) & (df["close"] < df["ema_50"])
+
+    trend = pd.Series(0, index=df.index, dtype=int)
+    trend[bullish] = 1
+    trend[bearish] = -1
+
+    # Filter: bullish → only longs, bearish → only shorts, neutral → all
+    filtered = base_signals.copy()
+    filtered[(trend == 1) & (base_signals == -1)] = 0
+    filtered[(trend == -1) & (base_signals == 1)] = 0
+
+    return filtered
+
+
 SIGNAL_FUNCS = {
     "momentum_reversal": _signal_momentum_reversal,
     "volatility_breakout": _signal_volatility_breakout,
     "composite": _signal_composite,
+    "momentum_reversal_mtf": _signal_momentum_reversal_mtf,
 }
 
 

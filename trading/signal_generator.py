@@ -1,9 +1,13 @@
 """
-Signal Generator v3 — Expanded Alpha Signals
-===============================================
-Two strategies running on 10 coins:
-  1. Momentum Reversal (relaxed params) — contrarian, fewer but high-quality trades
-  2. Volatility Breakout (new) — trend-continuation, more frequent trades
+Signal Generator v4 — Full Alpha Suite
+========================================
+Six strategies running on 10 coins:
+  1. Momentum Reversal — contrarian on ROC extremes
+  2. Volatility Breakout — trend-continuation on ATR bands
+  3. Multi-Timeframe — 1D trend + 4H entry
+  4. Funding Rate — contrarian on extreme funding rates
+  5. Liquidation Cascade — OI drops + price cascades
+  6. ML Signal — LightGBM classifier on 20+ features
 
 Universe: BTC, ETH, BNB, SOL, XRP, NEAR, LINK, INJ, UNI, LTC
 
@@ -16,274 +20,127 @@ Usage:
 import ccxt
 import pandas as pd
 import numpy as np
+import time
 from datetime import datetime, timezone
 from loguru import logger
 
 from utils.indicators import add_all_indicators
 from utils.regime import RegimeDetector
 from strategies.multi_timeframe import MultiTimeframeStrategy
+from strategies.funding_rate import FundingRateStrategy
+from strategies.liquidation_cascade import LiquidationCascadeStrategy
+from strategies.ml_model import MLSignalModel
 
 
 # ═══════════════════════════════════════════
 # ALPHA CONFIGS — v2 (relaxed + expanded)
 # ═══════════════════════════════════════════
 
+def _build_spot_config(roc_thresh=-4.0):
+    """Helper to build spot config — Momentum Reversal only (best Sharpe in backtest)."""
+    return {
+        "strategies": [
+            {
+                "name": "momentum_reversal",
+                "params": {
+                    "roc_threshold": roc_thresh,
+                    "roc_exit": 2.0,
+                    "support_buffer": 0.05,
+                },
+                "stop_loss": 0.03,
+            },
+        ],
+        "timeframe": "4h",
+        "lookback_candles": 250,
+    }
+
+
 ALPHA_CONFIGS = {
-    # ── Momentum Reversal (relaxed thresholds) ──
-    "BTC/USDT": {
+    # Large caps — lower sensitivity
+    "BTC/USDT": _build_spot_config(-4.0),
+    "ETH/USDT": _build_spot_config(-4.0),
+    "BNB/USDT": _build_spot_config(-4.0),
+    "XRP/USDT": _build_spot_config(-4.0),
+    "LTC/USDT": _build_spot_config(-4.0),
+    # Mid caps
+    "LINK/USDT": _build_spot_config(-4.0),
+    "UNI/USDT": _build_spot_config(-4.0),
+    # Higher volatility — more sensitive threshold
+    "SOL/USDT": _build_spot_config(-5.0),
+    "NEAR/USDT": _build_spot_config(-5.0),
+    "INJ/USDT": _build_spot_config(-5.0),
+}
+
+
+# ═══════════════════════════════════════════
+# FUTURES ALPHA CONFIGS — aggressive for leverage
+# ═══════════════════════════════════════════
+# Key differences vs spot:
+#   - Lower ROC threshold → easier entry (leverage amplifies small moves)
+#   - Tighter stop-loss → 2% instead of 3% (3x leverage = 6% loss on margin)
+#   - Faster exit → roc_exit 1.5 instead of 2.0
+#   - VB: lower atr_multiplier → catch breakouts earlier
+
+def _build_futures_config(roc_thresh):
+    """Helper to build a futures config for one coin.
+    Only Momentum Reversal kept — VB and TF had negative Sharpe in backtest.
+    """
+    return {
         "strategies": [
             {
                 "name": "momentum_reversal",
                 "params": {
-                    "roc_threshold": -8.0,
-                    "roc_exit": 3.0,
+                    "roc_threshold": roc_thresh,
+                    "roc_exit": 1.5,
                     "support_buffer": 0.05,
                 },
-                "stop_loss": 0.03,
-            },
-            {
-                "name": "volatility_breakout",
-                "params": {
-                    "atr_multiplier": 1.5,
-                    "volume_threshold": 1.5,
-                    "holding_periods": 6,
-                },
-                "stop_loss": 0.04,
+                "stop_loss": 0.02,
             },
         ],
         "timeframe": "4h",
         "lookback_candles": 250,
-    },
-    "ETH/USDT": {
-        "strategies": [
-            {
-                "name": "momentum_reversal",
-                "params": {
-                    "roc_threshold": -8.0,
-                    "roc_exit": 3.0,
-                    "support_buffer": 0.05,
-                },
-                "stop_loss": 0.03,
-            },
-            {
-                "name": "volatility_breakout",
-                "params": {
-                    "atr_multiplier": 1.5,
-                    "volume_threshold": 1.5,
-                    "holding_periods": 6,
-                },
-                "stop_loss": 0.04,
-            },
-        ],
-        "timeframe": "4h",
-        "lookback_candles": 250,
-    },
-    "BNB/USDT": {
-        "strategies": [
-            {
-                "name": "momentum_reversal",
-                "params": {
-                    "roc_threshold": -8.0,
-                    "roc_exit": 3.0,
-                    "support_buffer": 0.05,
-                },
-                "stop_loss": 0.03,
-            },
-            {
-                "name": "volatility_breakout",
-                "params": {
-                    "atr_multiplier": 2.0,
-                    "volume_threshold": 1.5,
-                    "holding_periods": 6,
-                },
-                "stop_loss": 0.04,
-            },
-        ],
-        "timeframe": "4h",
-        "lookback_candles": 250,
-    },
-    "SOL/USDT": {
-        "strategies": [
-            {
-                "name": "momentum_reversal",
-                "params": {
-                    "roc_threshold": -10.0,
-                    "roc_exit": 3.0,
-                    "support_buffer": 0.05,
-                },
-                "stop_loss": 0.03,
-            },
-            {
-                "name": "volatility_breakout",
-                "params": {
-                    "atr_multiplier": 1.5,
-                    "volume_threshold": 1.5,
-                    "holding_periods": 6,
-                },
-                "stop_loss": 0.04,
-            },
-        ],
-        "timeframe": "4h",
-        "lookback_candles": 250,
-    },
-    "XRP/USDT": {
-        "strategies": [
-            {
-                "name": "momentum_reversal",
-                "params": {
-                    "roc_threshold": -8.0,
-                    "roc_exit": 3.0,
-                    "support_buffer": 0.05,
-                },
-                "stop_loss": 0.03,
-            },
-            {
-                "name": "volatility_breakout",
-                "params": {
-                    "atr_multiplier": 1.5,
-                    "volume_threshold": 1.5,
-                    "holding_periods": 6,
-                },
-                "stop_loss": 0.04,
-            },
-        ],
-        "timeframe": "4h",
-        "lookback_candles": 250,
-    },
-    "NEAR/USDT": {
-        "strategies": [
-            {
-                "name": "momentum_reversal",
-                "params": {
-                    "roc_threshold": -10.0,
-                    "roc_exit": 3.0,
-                    "support_buffer": 0.05,
-                },
-                "stop_loss": 0.03,
-            },
-            {
-                "name": "volatility_breakout",
-                "params": {
-                    "atr_multiplier": 1.5,
-                    "volume_threshold": 1.5,
-                    "holding_periods": 6,
-                },
-                "stop_loss": 0.04,
-            },
-        ],
-        "timeframe": "4h",
-        "lookback_candles": 250,
-    },
-    "LINK/USDT": {
-        "strategies": [
-            {
-                "name": "momentum_reversal",
-                "params": {
-                    "roc_threshold": -8.0,
-                    "roc_exit": 3.0,
-                    "support_buffer": 0.05,
-                },
-                "stop_loss": 0.03,
-            },
-            {
-                "name": "volatility_breakout",
-                "params": {
-                    "atr_multiplier": 1.5,
-                    "volume_threshold": 1.5,
-                    "holding_periods": 6,
-                },
-                "stop_loss": 0.04,
-            },
-        ],
-        "timeframe": "4h",
-        "lookback_candles": 250,
-    },
-    "INJ/USDT": {
-        "strategies": [
-            {
-                "name": "momentum_reversal",
-                "params": {
-                    "roc_threshold": -10.0,
-                    "roc_exit": 3.0,
-                    "support_buffer": 0.05,
-                },
-                "stop_loss": 0.03,
-            },
-            {
-                "name": "volatility_breakout",
-                "params": {
-                    "atr_multiplier": 1.5,
-                    "volume_threshold": 1.5,
-                    "holding_periods": 6,
-                },
-                "stop_loss": 0.04,
-            },
-        ],
-        "timeframe": "4h",
-        "lookback_candles": 250,
-    },
-    "UNI/USDT": {
-        "strategies": [
-            {
-                "name": "momentum_reversal",
-                "params": {
-                    "roc_threshold": -8.0,
-                    "roc_exit": 3.0,
-                    "support_buffer": 0.05,
-                },
-                "stop_loss": 0.03,
-            },
-            {
-                "name": "volatility_breakout",
-                "params": {
-                    "atr_multiplier": 1.5,
-                    "volume_threshold": 1.5,
-                    "holding_periods": 6,
-                },
-                "stop_loss": 0.04,
-            },
-        ],
-        "timeframe": "4h",
-        "lookback_candles": 250,
-    },
-    "LTC/USDT": {
-        "strategies": [
-            {
-                "name": "momentum_reversal",
-                "params": {
-                    "roc_threshold": -8.0,
-                    "roc_exit": 3.0,
-                    "support_buffer": 0.05,
-                },
-                "stop_loss": 0.03,
-            },
-            {
-                "name": "volatility_breakout",
-                "params": {
-                    "atr_multiplier": 2.0,
-                    "volume_threshold": 1.5,
-                    "holding_periods": 6,
-                },
-                "stop_loss": 0.04,
-            },
-        ],
-        "timeframe": "4h",
-        "lookback_candles": 250,
-    },
+    }
+
+
+FUTURES_ALPHA_CONFIGS = {
+    # Large caps — lower threshold (less volatile)
+    "BTC/USDT":  _build_futures_config(roc_thresh=-3.0),
+    "ETH/USDT":  _build_futures_config(roc_thresh=-3.0),
+    "BNB/USDT":  _build_futures_config(roc_thresh=-3.0),
+    "XRP/USDT":  _build_futures_config(roc_thresh=-3.0),
+    "LTC/USDT":  _build_futures_config(roc_thresh=-3.0),
+    # Mid caps — slightly wider (more volatile)
+    "SOL/USDT":  _build_futures_config(roc_thresh=-4.0),
+    "NEAR/USDT": _build_futures_config(roc_thresh=-4.0),
+    "LINK/USDT": _build_futures_config(roc_thresh=-3.0),
+    "INJ/USDT":  _build_futures_config(roc_thresh=-4.0),
+    "UNI/USDT":  _build_futures_config(roc_thresh=-3.0),
 }
 
 
 class SignalGenerator:
     """Generates real-time trading signals from Binance data."""
 
-    def __init__(self):
+    # Cache TTL for multi-timeframe bias (seconds)
+    MTF_CACHE_TTL = 300  # 5 minutes
+
+    def __init__(self, configs=None):
+        self.configs = configs or ALPHA_CONFIGS
         self.exchange = ccxt.binance({
             "enableRateLimit": True,
             "options": {"defaultType": "spot"},
         })
         self.regime_detector = RegimeDetector()
         self.mtf_strategy = MultiTimeframeStrategy()
-        logger.info(f"SignalGenerator v3 initialized ({len(ALPHA_CONFIGS)} coins, 3 strategies, regime + MTF).")
+        self._mtf_cache: dict = {}  # {symbol: {"data": dict, "ts": float}}
+
+        # New strategies (shared across all coins)
+        self.funding_rate_strategy = FundingRateStrategy()
+        self.liquidation_strategy = LiquidationCascadeStrategy()
+        self.ml_model = MLSignalModel()
+
+        n_strats = 3 + (1 if self.ml_model.model else 0) + 2  # MR+VB+MTF + ML? + FR+LC
+        logger.info(f"SignalGenerator v4 initialized ({len(self.configs)} coins, {n_strats} strategies, regime + MTF).")
 
     def fetch_latest(self, symbol: str, timeframe: str, limit: int = 250) -> pd.DataFrame:
         """Fetch latest candles from Binance."""
@@ -398,6 +255,110 @@ class SignalGenerator:
             logger.debug(f"MTF check failed for {symbol}: {e}")
             return None
 
+    # ── Multi-Timeframe Bias ──
+
+    def _get_mtf_bias(self, symbol: str) -> dict:
+        """
+        Get multi-timeframe directional bias.
+
+        - Daily (1d): Overall trend direction using EMA 21/50 crossover
+        - Hourly (1h): Short-term momentum confirmation using RSI + EMA trend
+
+        Returns:
+            {
+                "daily_bias": 1 (bullish) / -1 (bearish) / 0 (neutral),
+                "hourly_bias": 1 / -1 / 0,
+                "daily_trend": "bullish" / "bearish" / "neutral",
+                "hourly_trend": "bullish" / "bearish" / "neutral",
+                "confirmed": bool,  # True if daily and hourly agree
+                "reason": str,
+            }
+        """
+        # Check cache
+        now = time.time()
+        cached = self._mtf_cache.get(symbol)
+        if cached and (now - cached["ts"]) < self.MTF_CACHE_TTL:
+            return cached["data"]
+
+        bias_labels = {1: "bullish", -1: "bearish", 0: "neutral"}
+        default = {
+            "daily_bias": 0, "hourly_bias": 0,
+            "daily_trend": "neutral", "hourly_trend": "neutral",
+            "confirmed": False, "reason": "MTF data unavailable",
+        }
+
+        # ── Daily bias: EMA 21 vs EMA 50 ──
+        try:
+            df_1d = self.fetch_latest(symbol, "1d", limit=100)
+            if df_1d.empty or len(df_1d) < 55:
+                logger.warning(f"  {symbol}: MTF daily data insufficient, skipping MTF filter")
+                self._mtf_cache[symbol] = {"data": default, "ts": now}
+                return default
+            df_1d = add_all_indicators(df_1d)
+            latest_1d = df_1d.iloc[-1]
+
+            ema21_1d = latest_1d["ema_21"]
+            ema50_1d = latest_1d["ema_50"]
+            close_1d = latest_1d["close"]
+
+            if ema21_1d > ema50_1d and close_1d > ema21_1d:
+                daily_bias = 1
+            elif ema21_1d < ema50_1d and close_1d < ema21_1d:
+                daily_bias = -1
+            else:
+                daily_bias = 0
+        except Exception as e:
+            logger.warning(f"  {symbol}: MTF daily fetch failed ({e}), allowing signal through")
+            self._mtf_cache[symbol] = {"data": default, "ts": now}
+            return default
+
+        # ── Hourly bias: RSI zone + EMA direction ──
+        try:
+            df_1h = self.fetch_latest(symbol, "1h", limit=100)
+            if df_1h.empty or len(df_1h) < 55:
+                logger.warning(f"  {symbol}: MTF hourly data insufficient")
+                hourly_bias = 0
+            else:
+                df_1h = add_all_indicators(df_1h)
+                latest_1h = df_1h.iloc[-1]
+
+                rsi_1h = latest_1h["rsi"]
+                ema21_1h = latest_1h["ema_21"]
+                close_1h = latest_1h["close"]
+                # EMA21 trending: compare current vs 3 bars ago
+                ema21_3_ago = df_1h["ema_21"].iloc[-4] if len(df_1h) >= 4 else ema21_1h
+
+                if rsi_1h > 45 and close_1h > ema21_1h and ema21_1h > ema21_3_ago:
+                    hourly_bias = 1
+                elif rsi_1h < 55 and close_1h < ema21_1h and ema21_1h < ema21_3_ago:
+                    hourly_bias = -1
+                else:
+                    hourly_bias = 0
+        except Exception as e:
+            logger.warning(f"  {symbol}: MTF hourly fetch failed ({e})")
+            hourly_bias = 0
+
+        confirmed = (daily_bias == hourly_bias) and daily_bias != 0
+        reason_parts = [
+            f"1d={bias_labels[daily_bias]}",
+            f"1h={bias_labels[hourly_bias]}",
+        ]
+        if confirmed:
+            reason_parts.append("CONFIRMED")
+
+        result = {
+            "daily_bias": daily_bias,
+            "hourly_bias": hourly_bias,
+            "daily_trend": bias_labels[daily_bias],
+            "hourly_trend": bias_labels[hourly_bias],
+            "confirmed": confirmed,
+            "reason": f"MTF: {', '.join(reason_parts)}",
+        }
+
+        self._mtf_cache[symbol] = {"data": result, "ts": now}
+        logger.debug(f"  {symbol}: {result['reason']}")
+        return result
+
     # ── Main Signal Logic ──
 
     def generate_signal(self, symbol: str) -> dict:
@@ -405,10 +366,10 @@ class SignalGenerator:
         Generate signal for a symbol by checking all configured strategies.
         Priority: first strategy that fires wins (Momentum Reversal first).
         """
-        if symbol not in ALPHA_CONFIGS:
+        if symbol not in self.configs:
             return {"signal": 0, "reason": "Not configured", "symbol": symbol}
 
-        config = ALPHA_CONFIGS[symbol]
+        config = self.configs[symbol]
         df = self.fetch_latest(symbol, config["timeframe"], config["lookback_candles"])
 
         if df.empty:
@@ -444,6 +405,24 @@ class SignalGenerator:
                 continue
 
             if result["signal"] != 0:
+                # ── Multi-timeframe confirmation ──
+                mtf = self._get_mtf_bias(symbol)
+
+                # Hard filter: daily trend vetoes disagreeing signals
+                if mtf["daily_bias"] != 0 and result["signal"] != mtf["daily_bias"]:
+                    logger.info(
+                        f"  {symbol}: Signal {result['signal']} rejected by daily trend "
+                        f"({mtf['daily_trend']})"
+                    )
+                    continue  # Try next strategy
+
+                # Soft filter: hourly warns but doesn't block
+                if mtf["hourly_bias"] != 0 and result["signal"] != mtf["hourly_bias"]:
+                    logger.info(
+                        f"  {symbol}: Signal {result['signal']} not confirmed by 1h "
+                        f"({mtf['hourly_trend']}), proceeding with caution"
+                    )
+
                 return {
                     **result,
                     "symbol": symbol,
@@ -459,6 +438,9 @@ class SignalGenerator:
                     "adx": latest["adx"],
                     "regime": regime_info["regime"],
                     "regime_confidence": regime_info["confidence"],
+                    "mtf_daily": mtf["daily_trend"],
+                    "mtf_hourly": mtf["hourly_trend"],
+                    "mtf_confirmed": mtf["confirmed"],
                     "timestamp": datetime.now(timezone.utc).strftime(
                         "%Y-%m-%d %H:%M:%S UTC"
                     ),
@@ -486,6 +468,97 @@ class SignalGenerator:
                     "%Y-%m-%d %H:%M:%S UTC"
                 ),
             }
+
+        # No signal from MR/VB/MTF — try Funding Rate strategy
+        try:
+            fr_result = self.funding_rate_strategy.check_signal(symbol, df)
+            if fr_result["signal"] != 0 and fr_result.get("confidence", 0) >= 0.6:
+                # MTF confirmation (soft — FR is already contrarian)
+                mtf = self._get_mtf_bias(symbol)
+                return {
+                    **fr_result,
+                    "symbol": symbol,
+                    "timeframe": config["timeframe"],
+                    "stop_loss": 0.025,  # Tighter stop for FR trades
+                    "close": latest["close"],
+                    "roc_10": latest["roc_10"],
+                    "rsi": latest["rsi"],
+                    "price_position": latest["price_position"],
+                    "atr_pct": latest["atr_pct"],
+                    "bb_pct_b": latest["bb_pct_b"],
+                    "volume_ratio": latest["volume_ratio"],
+                    "adx": latest["adx"],
+                    "regime": regime_info["regime"],
+                    "regime_confidence": regime_info["confidence"],
+                    "mtf_daily": mtf.get("daily_trend", "neutral"),
+                    "mtf_hourly": mtf.get("hourly_trend", "neutral"),
+                    "timestamp": datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%d %H:%M:%S UTC"
+                    ),
+                }
+        except Exception as e:
+            logger.debug(f"  {symbol}: Funding rate check failed: {e}")
+
+        # Try Liquidation Cascade strategy
+        try:
+            lc_result = self.liquidation_strategy.check_signal(symbol, df)
+            if lc_result["signal"] != 0 and lc_result.get("confidence", 0) >= 0.6:
+                return {
+                    **lc_result,
+                    "symbol": symbol,
+                    "timeframe": config["timeframe"],
+                    "stop_loss": 0.03,
+                    "close": latest["close"],
+                    "roc_10": latest["roc_10"],
+                    "rsi": latest["rsi"],
+                    "price_position": latest["price_position"],
+                    "atr_pct": latest["atr_pct"],
+                    "bb_pct_b": latest["bb_pct_b"],
+                    "volume_ratio": latest["volume_ratio"],
+                    "adx": latest["adx"],
+                    "regime": regime_info["regime"],
+                    "regime_confidence": regime_info["confidence"],
+                    "timestamp": datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%d %H:%M:%S UTC"
+                    ),
+                }
+        except Exception as e:
+            logger.debug(f"  {symbol}: Liquidation cascade check failed: {e}")
+
+        # Try ML Signal model (lowest priority — needs trained model)
+        try:
+            ml_result = self.ml_model.check_signal(symbol, df)
+            if ml_result["signal"] != 0 and ml_result.get("confidence", 0) >= 0.45:
+                # ML also respects MTF daily trend
+                mtf = self._get_mtf_bias(symbol)
+                if mtf["daily_bias"] != 0 and ml_result["signal"] != mtf["daily_bias"]:
+                    logger.info(
+                        f"  {symbol}: ML signal {ml_result['signal']} rejected by daily trend"
+                    )
+                else:
+                    return {
+                        **ml_result,
+                        "symbol": symbol,
+                        "timeframe": config["timeframe"],
+                        "stop_loss": 0.025,
+                        "close": latest["close"],
+                        "roc_10": latest["roc_10"],
+                        "rsi": latest["rsi"],
+                        "price_position": latest["price_position"],
+                        "atr_pct": latest["atr_pct"],
+                        "bb_pct_b": latest["bb_pct_b"],
+                        "volume_ratio": latest["volume_ratio"],
+                        "adx": latest["adx"],
+                        "regime": regime_info["regime"],
+                        "regime_confidence": regime_info["confidence"],
+                        "mtf_daily": mtf.get("daily_trend", "neutral"),
+                        "mtf_hourly": mtf.get("hourly_trend", "neutral"),
+                        "timestamp": datetime.now(timezone.utc).strftime(
+                            "%Y-%m-%d %H:%M:%S UTC"
+                        ),
+                    }
+        except Exception as e:
+            logger.debug(f"  {symbol}: ML signal check failed: {e}")
 
         # No signal at all — check exit logic
         mr_params = config["strategies"][0]["params"]  # First is always MR
@@ -522,7 +595,7 @@ class SignalGenerator:
     def generate_all(self) -> list:
         """Generate signals for all configured symbols."""
         signals = []
-        for symbol in ALPHA_CONFIGS:
+        for symbol in self.configs:
             sig = self.generate_signal(symbol)
             signals.append(sig)
 

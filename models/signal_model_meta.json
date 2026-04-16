@@ -1,0 +1,109 @@
+{
+  "model_name": "signal_model",
+  "trained_at": "2026-04-15T17:43:08.884392+00:00",
+  "symbols": [
+    "BTC/USDT",
+    "ETH/USDT",
+    "BNB/USDT",
+    "SOL/USDT",
+    "XRP/USDT",
+    "NEAR/USDT",
+    "LINK/USDT",
+    "INJ/USDT",
+    "UNI/USDT",
+    "LTC/USDT"
+  ],
+  "n_samples": 9390,
+  "n_features": 20,
+  "features": [
+    "rsi",
+    "roc_5",
+    "roc_10",
+    "roc_20",
+    "stoch_k",
+    "stoch_d",
+    "adx",
+    "plus_di",
+    "minus_di",
+    "macd",
+    "macd_signal",
+    "atr_pct",
+    "bb_width",
+    "bb_pct_b",
+    "volatility_14",
+    "volume_ratio",
+    "price_position",
+    "returns",
+    "log_returns",
+    "zscore"
+  ],
+  "avg_accuracy": 0.5461,
+  "best_accuracy": 0.5974,
+  "fold_scores": [
+    0.5974,
+    0.5476,
+    0.4901,
+    0.5105,
+    0.5847
+  ],
+  "label_distribution": {
+    "0": 4883,
+    "-1": 2603,
+    "1": 1904
+  },
+  "forward_periods": 6,
+  "buy_threshold": 0.02,
+  "sell_threshold": -0.02,
+  "top_features": [
+    {
+      "name": "macd_signal",
+      "importance": 1084.93
+    },
+    {
+      "name": "volatility_14",
+      "importance": 1042.39
+    },
+    {
+      "name": "adx",
+      "importance": 1016.65
+    },
+    {
+      "name": "macd",
+      "importance": 925.85
+    },
+    {
+      "name": "atr_pct",
+      "importance": 869.42
+    },
+    {
+      "name": "bb_width",
+      "importance": 763.33
+    },
+    {
+      "name": "plus_di",
+      "importance": 763.08
+    },
+    {
+      "name": "roc_20",
+      "importance": 684.57
+    },
+    {
+      "name": "roc_5",
+      "importance": 517.26
+    },
+    {
+      "name": "rsi",
+      "importance": 493.26
+    }
+  ],
+  "label_map": {
+    "SHORT": 0,
+    "HOLD": 1,
+    "BUY": 2
+  },
+  "reverse_map": {
+    "0": -1,
+    "1": 0,
+    "2": 1
+  }
+}

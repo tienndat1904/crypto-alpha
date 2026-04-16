@@ -115,7 +115,20 @@ MAX_ALPHA_DRAWDOWN = 0.25                  # Max drawdown per alpha
 WALK_FORWARD_TRAIN_RATIO = 0.7            # 70% train, 30% test
 
 # ═══════════════════════════════════════════
+# TIMEZONE
+# ═══════════════════════════════════════════
+from datetime import timezone, timedelta
+VN_TIMEZONE = timezone(timedelta(hours=7))  # UTC+7 Vietnam
+
+# ═══════════════════════════════════════════
 # LOGGING
 # ═══════════════════════════════════════════
 LOG_LEVEL = "INFO"
 LOG_FILE = LOG_DIR / "crypto_alpha.log"
+
+# ═══════════════════════════════════════════
+# UNIVERSE SCANNER
+# ═══════════════════════════════════════════
+UNIVERSE_SCAN_INTERVAL_DAYS = 7
+MIN_24H_VOLUME_USD = 50_000_000            # $50M minimum daily volume
+MAX_UNIVERSE_SIZE = 15                     # Maximum coins in trading universe

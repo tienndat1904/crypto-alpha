@@ -135,11 +135,85 @@ class RiskManager:
 
     # ── Position Sizing ──
 
+    def _calculate_kelly_fraction(self) -> float:
+        """
+        Calculate Kelly criterion fraction based on recent trade history.
+
+        Kelly f* = (W * R - L) / R
+        where:
+          W = win rate
+          R = avg_win / avg_loss ratio
+          L = loss rate (1 - W)
+
+        Uses last 20 trades for calculation.
+        Returns half-Kelly (more conservative) clamped to [0.5, 2.0] as a multiplier.
+        If not enough trades (<5), returns 1.0 (no adjustment).
+        """
+        history = self.state.get("trade_history", [])
+        recent = history[-20:] if len(history) >= 5 else None
+
+        if recent is None:
+            return 1.0
+
+        wins = [t for t in recent if t["pnl_usd"] > 0]
+        losses = [t for t in recent if t["pnl_usd"] <= 0]
+
+        if not wins or not losses:
+            return 1.0
+
+        win_rate = len(wins) / len(recent)
+        avg_win = sum(t["pnl_usd"] for t in wins) / len(wins)
+        avg_loss = abs(sum(t["pnl_usd"] for t in losses) / len(losses))
+
+        if avg_loss == 0:
+            return 1.0
+
+        R = avg_win / avg_loss
+        kelly = (win_rate * R - (1 - win_rate)) / R
+
+        # Half-Kelly for safety
+        half_kelly = kelly / 2
+
+        # Convert to multiplier: if kelly suggests 4% and base is 2%, multiplier = 2.0
+        # Clamp between 0.5x and 2.0x of base risk
+        multiplier = max(0.5, min(2.0, 1.0 + half_kelly))
+
+        return round(multiplier, 3)
+
+    def _recent_performance_multiplier(self) -> float:
+        """
+        Scale position size based on recent performance (last 10 trades).
+
+        - If recent Sharpe-like metric is positive (more wins, good R:R): scale up to 1.3x
+        - If negative (losing streak approaching): scale down to 0.7x
+        - Neutral: 1.0x
+
+        This is separate from the consecutive_losses reduction (which is a hard cutoff at 3).
+        """
+        history = self.state.get("trade_history", [])
+        recent = history[-10:] if len(history) >= 5 else None
+
+        if recent is None:
+            return 1.0
+
+        pnls = [t["pnl_usd"] for t in recent]
+        avg_pnl = sum(pnls) / len(pnls)
+
+        if avg_pnl > 0:
+            # Winning: scale up slightly (max 1.3x)
+            multiplier = min(1.3, 1.0 + avg_pnl / 50)  # +$50 avg -> 2.0x, capped at 1.3
+        else:
+            # Losing: scale down (min 0.7x)
+            multiplier = max(0.7, 1.0 + avg_pnl / 50)  # -$50 avg -> 0.0x, capped at 0.7
+
+        return round(multiplier, 3)
+
     def calculate_position_size(
         self,
         symbol: str,
         entry_price: float,
         stop_loss_pct: float,
+        side: str = "long",
     ) -> dict:
         """
         Calculate position size based on risk management rules.
@@ -157,6 +231,17 @@ class RiskManager:
             risk_amount *= 0.5
             logger.warning("3+ consecutive losses: position size reduced 50%")
 
+        # Kelly criterion adjustment
+        kelly_mult = self._calculate_kelly_fraction()
+        risk_amount *= kelly_mult
+
+        # Recent performance adjustment
+        perf_mult = self._recent_performance_multiplier()
+        risk_amount *= perf_mult
+
+        if kelly_mult != 1.0 or perf_mult != 1.0:
+            logger.info(f"  Position sizing: kelly={kelly_mult:.2f}x, perf={perf_mult:.2f}x")
+
         # Position size = risk_amount / stop_loss_distance
         stop_distance = entry_price * stop_loss_pct
         position_size_base = risk_amount / stop_distance  # In base asset units
@@ -168,7 +253,10 @@ class RiskManager:
             position_value = max_position
             position_size_base = position_value / entry_price
 
-        stop_price = entry_price * (1 - stop_loss_pct)
+        if side == "short":
+            stop_price = entry_price * (1 + stop_loss_pct)
+        else:
+            stop_price = entry_price * (1 - stop_loss_pct)
 
         # Account for fees
         fee_cost = position_value * TRADING_FEE * 2  # Entry + exit
@@ -187,14 +275,62 @@ class RiskManager:
 
     # ── Position Management ──
 
-    def open_position(self, symbol: str, side: str, entry_price: float, stop_loss_pct: float) -> dict:
+    def adjust_stop_loss(self, base_stop_pct: float, regime: str, atr_pct: float = None) -> float:
+        """
+        Adjust stop-loss based on market regime and volatility.
+
+        - Trending: widen stop by 1.3x (avoid premature exit in trends)
+        - Sideways: keep base stop (mean-reversion works with tighter stops)
+        - Choppy: tighten stop by 0.8x (cut losses faster in noise)
+
+        Also clamp based on ATR if available:
+        - Stop should be at least 1x ATR% (avoid getting stopped by normal noise)
+        - Stop should be at most 3x ATR% (don't hold losers too long)
+
+        Final clamp: [1.5%, 8%] regardless
+        """
+        # Regime multiplier
+        multipliers = {
+            "trending": 1.3,
+            "sideways": 1.0,
+            "choppy": 0.8,
+        }
+        mult = multipliers.get(regime, 1.0)
+        adjusted = base_stop_pct * mult
+
+        # ATR-based bounds if available
+        if atr_pct and atr_pct > 0:
+            atr_frac = atr_pct / 100
+            min_stop = atr_frac * 1.0  # At least 1x ATR
+            max_stop = atr_frac * 3.0  # At most 3x ATR
+            adjusted = max(adjusted, min_stop)
+            adjusted = min(adjusted, max_stop)
+
+        # Hard clamps
+        adjusted = max(adjusted, 0.015)  # minimum 1.5%
+        adjusted = min(adjusted, 0.08)   # maximum 8%
+
+        return round(adjusted, 4)
+
+    def open_position(self, symbol: str, side: str, entry_price: float, stop_loss_pct: float, atr_pct: float = None, regime: str = None, strategy: str = None) -> dict:
         """Open a paper position."""
-        sizing = self.calculate_position_size(symbol, entry_price, stop_loss_pct)
+        # Adjust stop based on regime
+        if regime:
+            actual_stop_pct = self.adjust_stop_loss(stop_loss_pct, regime, atr_pct)
+            logger.info(f"  Stop adjusted: {stop_loss_pct:.1%} -> {actual_stop_pct:.1%} (regime={regime})")
+        else:
+            actual_stop_pct = stop_loss_pct
+
+        sizing = self.calculate_position_size(symbol, entry_price, actual_stop_pct, side=side)
 
         # Take-profit levels based on risk distance
-        risk_distance = entry_price * stop_loss_pct
-        tp1_price = round(entry_price + risk_distance * 2, 4)  # 2R
-        tp2_price = round(entry_price + risk_distance * 3, 4)  # 3R
+        risk_distance = entry_price * actual_stop_pct
+        if side == "short":
+            tp1_price = round(entry_price - risk_distance * 2, 4)  # 2R
+            tp2_price = round(entry_price - risk_distance * 3, 4)  # 3R
+        else:
+            tp1_price = round(entry_price + risk_distance * 2, 4)  # 2R
+            tp2_price = round(entry_price + risk_distance * 3, 4)  # 3R
 
         position = {
             "symbol": symbol,
@@ -203,13 +339,18 @@ class RiskManager:
             "size_base": sizing["size_base"],
             "size_usdt": sizing["size_usdt"],
             "stop_price": sizing["stop_price"],
-            "stop_loss_pct": stop_loss_pct,
+            "stop_loss_pct": actual_stop_pct,
+            "base_stop_loss_pct": stop_loss_pct,
+            "regime": regime,
             "opened_at": datetime.now(timezone.utc).isoformat(),
             "status": "open",
             "tp1_price": tp1_price,
             "tp2_price": tp2_price,
             "tp1_hit": False,
             "highest_price": entry_price,
+            "lowest_price": entry_price,
+            "atr_pct": atr_pct,
+            "strategy": strategy or "unknown",
         }
 
         self.state["open_positions"][symbol] = position
@@ -330,13 +471,23 @@ class RiskManager:
             self.state["consecutive_losses"] += 1
 
         # Record trade
+        closed_at = datetime.now(timezone.utc)
+        duration_hours = None
+        if pos.get("opened_at"):
+            try:
+                opened_at = datetime.fromisoformat(pos["opened_at"])
+                duration_hours = round((closed_at - opened_at).total_seconds() / 3600, 2)
+            except (ValueError, TypeError):
+                pass
+
         trade_record = {
             **pos,
             "exit_price": exit_price,
             "pnl_pct": round(pnl_pct * 100, 3),
             "pnl_usd": round(pnl_usd, 2),
             "reason": reason,
-            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "closed_at": closed_at.isoformat(),
+            "duration_hours": duration_hours,
         }
         self.state["trade_history"].append(trade_record)
 
@@ -354,28 +505,52 @@ class RiskManager:
 
         return trade_record
 
+    # Trailing stop config
+    BREAKEVEN_THRESHOLD = 0.015   # Move stop to breakeven when profit >= 1.5%
+    TRAIL_ACTIVATE_THRESHOLD = 0.025  # Start trailing when profit >= 2.5%
+    TRAIL_DISTANCE_PCT = 0.015    # Trail 1.5% behind highest profit
+
     def check_stops_and_tp(self, current_prices: dict) -> list:
-        """Check stop-losses, take-profit levels, and trailing stops."""
+        """Check stop-losses, take-profit levels, and trailing stops.
+
+        Trailing stop logic (3 phases):
+          1. profit < 1.5%  → fixed stop loss (original)
+          2. profit >= 1.5% → move stop to breakeven (entry price)
+          3. profit >= 2.5% → trail stop behind best price (1.5% distance,
+             or 2x ATR if available). Stop only moves up, never down.
+        After TP1 hit, trailing uses tighter distance (ATR-based).
+        """
         closed = []
+        state_changed = False
+
         for symbol, pos in list(self.state["open_positions"].items()):
             if symbol not in current_prices:
                 continue
 
             price = current_prices[symbol]
             side = pos["side"]
+            entry = pos["entry_price"]
             tp1_hit = pos.get("tp1_hit", False)
             tp1_price = pos.get("tp1_price")
             tp2_price = pos.get("tp2_price")
 
             # Update highest/lowest price tracking
             if side == "long":
-                if price > pos.get("highest_price", pos["entry_price"]):
+                if price > pos.get("highest_price", entry):
                     pos["highest_price"] = price
+                    state_changed = True
             else:
-                # For shorts, track lowest price (most favorable)
-                lowest = pos.get("highest_price", pos["entry_price"])
-                if price < lowest:
-                    pos["highest_price"] = price
+                if price < pos.get("lowest_price", entry):
+                    pos["lowest_price"] = price
+                    state_changed = True
+
+            # Calculate unrealized profit %
+            if side == "long":
+                unrealized_pct = (price - entry) / entry
+                best_price = pos.get("highest_price", entry)
+            else:
+                unrealized_pct = (entry - price) / entry
+                best_price = pos.get("lowest_price", entry)
 
             # ── Take-Profit 2 (3R) ── close remaining 100%
             if tp1_hit and tp2_price is not None:
@@ -392,42 +567,72 @@ class RiskManager:
                     if trade:
                         closed.append(trade)
                     pos["tp1_hit"] = True
-                    # Move stop to breakeven (entry price)
-                    pos["stop_price"] = pos["entry_price"]
-                    self._save_state()
+                    pos["stop_price"] = entry  # breakeven
+                    state_changed = True
                     continue
 
-            # ── Trailing stop (active after TP1 hit) ──
-            if tp1_hit:
-                if side == "long":
-                    trailing_stop = pos["highest_price"] * (1 - pos["stop_loss_pct"])
-                    if price <= trailing_stop:
-                        trade = self.close_position(symbol, price, reason="trailing_stop")
-                        if trade:
-                            closed.append(trade)
-                        continue
-                else:
-                    # For short: trail above the lowest price
-                    trailing_stop = pos["highest_price"] * (1 + pos["stop_loss_pct"])
-                    if price >= trailing_stop:
-                        trade = self.close_position(symbol, price, reason="trailing_stop")
-                        if trade:
-                            closed.append(trade)
-                        continue
+            # ── Trailing Stop Logic ──
+            trail_pct = self._get_trail_distance(pos, tp1_hit)
 
-            # ── Regular stop-loss ──
+            if tp1_hit or unrealized_pct >= self.TRAIL_ACTIVATE_THRESHOLD:
+                # Phase 3: Active trailing — stop follows best price
+                if side == "long":
+                    new_stop = best_price * (1 - trail_pct)
+                    if new_stop > pos["stop_price"]:
+                        pos["stop_price"] = round(new_stop, 4)
+                        state_changed = True
+                        logger.debug(f"Trailing stop updated {symbol}: stop=${new_stop:.4f} (best=${best_price:.4f})")
+                else:
+                    new_stop = best_price * (1 + trail_pct)
+                    if new_stop < pos["stop_price"]:
+                        pos["stop_price"] = round(new_stop, 4)
+                        state_changed = True
+                        logger.debug(f"Trailing stop updated {symbol}: stop=${new_stop:.4f} (best=${best_price:.4f})")
+
+            elif unrealized_pct >= self.BREAKEVEN_THRESHOLD:
+                # Phase 2: Move stop to breakeven
+                if side == "long" and pos["stop_price"] < entry:
+                    pos["stop_price"] = entry
+                    state_changed = True
+                    logger.info(f"Breakeven stop activated {symbol}: stop moved to entry ${entry:.4f}")
+                elif side == "short" and pos["stop_price"] > entry:
+                    pos["stop_price"] = entry
+                    state_changed = True
+                    logger.info(f"Breakeven stop activated {symbol}: stop moved to entry ${entry:.4f}")
+
+            # ── Check if stop price is hit ──
             if side == "long" and price <= pos["stop_price"]:
-                trade = self.close_position(symbol, price, reason="stop_loss")
+                reason = "trailing_stop" if pos["stop_price"] > entry * (1 - pos["stop_loss_pct"] * 1.01) else "stop_loss"
+                trade = self.close_position(symbol, price, reason=reason)
                 if trade:
                     closed.append(trade)
-            elif side == "short":
-                short_stop = pos["entry_price"] * (1 + pos["stop_loss_pct"])
-                if price >= short_stop:
-                    trade = self.close_position(symbol, price, reason="stop_loss")
-                    if trade:
-                        closed.append(trade)
+            elif side == "short" and price >= pos["stop_price"]:
+                reason = "trailing_stop" if pos["stop_price"] < entry * (1 + pos["stop_loss_pct"] * 1.01) else "stop_loss"
+                trade = self.close_position(symbol, price, reason=reason)
+                if trade:
+                    closed.append(trade)
+
+        if state_changed:
+            self._save_state()
 
         return closed
+
+    def _get_trail_distance(self, pos, tp1_hit):
+        """Calculate trailing distance percentage based on ATR or default."""
+        atr_pct = pos.get("atr_pct")
+        if tp1_hit and atr_pct:
+            # After TP1: tighter trail using 2x ATR
+            trail_pct = (atr_pct / 100) * 2
+            trail_pct = max(trail_pct, 0.01)   # min 1%
+            trail_pct = min(trail_pct, 0.08)   # max 8%
+        elif atr_pct:
+            # Before TP1: wider trail using 2.5x ATR
+            trail_pct = (atr_pct / 100) * 2.5
+            trail_pct = max(trail_pct, self.TRAIL_DISTANCE_PCT)
+            trail_pct = min(trail_pct, 0.10)
+        else:
+            trail_pct = self.TRAIL_DISTANCE_PCT
+        return trail_pct
 
     # ── Reporting ──
 

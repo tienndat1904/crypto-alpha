@@ -170,10 +170,10 @@ class OnchainSignalFilter:
         else:  # Short
             multiplier = regime["sell_multiplier"]
 
-        confidence = min(1.0, 0.5 * multiplier)
+        confidence = min(1.0, 0.6 * multiplier)
 
         # Block signal if confidence too low
-        if confidence < 0.3:
+        if confidence < 0.2:
             return {
                 "enhanced_signal": 0,
                 "confidence": confidence,

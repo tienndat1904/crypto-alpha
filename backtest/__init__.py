@@ -37,18 +37,18 @@ class BacktestEngine:
         risk_per_trade: float = 0.02,
         stop_loss_pct: float = None,
         stop_loss_atr: float = None,
+        leverage: int = 1,
     ):
         """
         Args:
             df: DataFrame with OHLCV + indicators (must have 'close')
             initial_capital: Starting capital in USD
-            fee: Trading fee per side (0.001 = 0.1%)
+            fee: Trading fee per side (0.001 = 0.1% spot, 0.0004 = 0.04% futures)
             slippage_pct: Estimated slippage per trade (0.0005 = 0.05%)
-                          Accounts for bid-ask spread and market impact.
-                          Typical values: 0.0003 for BTC, 0.001 for low-cap alts.
             risk_per_trade: Max risk per trade as fraction of capital
             stop_loss_pct: Fixed stop-loss percentage (e.g. 0.03 = 3%)
             stop_loss_atr: Stop-loss as ATR multiplier (requires 'atr' column)
+            leverage: Leverage multiplier (1 = spot, 3 = 3x futures)
         """
         self.df = df.copy()
         self.initial_capital = initial_capital
@@ -57,6 +57,7 @@ class BacktestEngine:
         self.risk_per_trade = risk_per_trade
         self.stop_loss_pct = stop_loss_pct
         self.stop_loss_atr = stop_loss_atr
+        self.leverage = leverage
         self.results = None
 
     def run(self, signals: pd.Series) -> pd.DataFrame:
@@ -80,13 +81,13 @@ class BacktestEngine:
         # Calculate returns
         df["market_return"] = df["close"].pct_change().fillna(0)
 
-        # Strategy returns = position * market return
+        # Strategy returns = position * market return * leverage
         # Shift position by 1 to avoid look-ahead bias
         # (signal at time t, enter at t+1, return measured at t+1)
-        df["strategy_return_gross"] = df["position"].shift(1).fillna(0) * df["market_return"]
+        df["strategy_return_gross"] = df["position"].shift(1).fillna(0) * df["market_return"] * self.leverage
 
-        # Apply trading costs + slippage on position changes
-        df["cost"] = df["trade"].abs() * (self.fee + self.slippage_pct)
+        # Apply trading costs + slippage on position changes (on leveraged notional)
+        df["cost"] = df["trade"].abs() * (self.fee + self.slippage_pct) * self.leverage
         df["strategy_return"] = df["strategy_return_gross"] - df["cost"]
 
         # Apply stop-loss
@@ -127,8 +128,8 @@ class BacktestEngine:
                     continue
 
                 if current_return < -sl:
-                    # Stop-loss hit — include fee + slippage on exit
-                    df.iloc[i, df.columns.get_loc("strategy_return")] = -sl - self.fee - self.slippage_pct
+                    # Stop-loss hit — include fee + slippage on exit (leveraged)
+                    df.iloc[i, df.columns.get_loc("strategy_return")] = (-sl * self.leverage) - (self.fee + self.slippage_pct) * self.leverage
                     df.iloc[i, df.columns.get_loc("position")] = 0
                     entry_price = None
             else:
@@ -234,9 +235,11 @@ class BacktestEngine:
         """Print formatted backtest report."""
         m = self.get_metrics()
 
+        mode = "FUTURES" if self.leverage > 1 else "SPOT"
         print("\n" + "=" * 55)
-        print("           BACKTEST REPORT")
+        print(f"           BACKTEST REPORT ({mode})")
         print("=" * 55)
+        print(f"  Mode:                {mode} ({self.leverage}x)")
         print(f"  Initial Capital:     ${self.initial_capital:,.2f}")
         print(f"  Final Equity:        ${m['final_equity']:,.2f}")
         print(f"  Total Return:        {m['total_return_pct']:+.2f}%")
@@ -328,9 +331,9 @@ def walk_forward_split(
 
     logger.info(
         f"Walk-forward split: train={len(train)} rows "
-        f"({train.index[0].date()} → {train.index[-1].date()}), "
+        f"({train.index[0].date()} -> {train.index[-1].date()}), "
         f"test={len(test)} rows "
-        f"({test.index[0].date()} → {test.index[-1].date()})"
+        f"({test.index[0].date()} -> {test.index[-1].date()})"
     )
     return train, test
 
@@ -416,8 +419,8 @@ def rolling_walk_forward(
 
         logger.info(
             f"Fold {i+1}/{n_splits}: "
-            f"train[{train.index[0].date()}→{train.index[-1].date()}] ({len(train)}), "
-            f"test[{test.index[0].date()}→{test.index[-1].date()}] ({len(test)})"
+            f"train[{train.index[0].date()}->{train.index[-1].date()}] ({len(train)}), "
+            f"test[{test.index[0].date()}->{test.index[-1].date()}] ({len(test)})"
         )
 
         folds.append((train, test, fold_info))

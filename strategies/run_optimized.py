@@ -31,14 +31,15 @@ from utils.indicators import add_all_indicators
 logger.add(LOG_FILE, rotation="10 MB", level="INFO")
 
 # Focus coins based on Phase 2 results
-FOCUS_COINS = ["BTC/USDT", "SOL/USDT", "XRP/USDT"]
-FOCUS_STRATEGIES = ["momentum_reversal", "volatility_breakout", "composite"]
+FOCUS_COINS = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT"]
+FOCUS_STRATEGIES = ["momentum_reversal", "volatility_breakout", "composite", "momentum_reversal_mtf"]
 TIMEFRAME = "4h"
 
 STRATEGY_NAMES = {
     "momentum_reversal": "Momentum Reversal",
     "volatility_breakout": "Volatility Breakout",
     "composite": "Composite Signal",
+    "momentum_reversal_mtf": "Momentum Reversal + MTF",
 }
 
 
@@ -73,9 +74,9 @@ def run_optimization(symbols: list = None, n_folds: int = 5):
     print("=" * 70)
 
     for symbol in symbols:
-        print(f"\n{'━' * 70}")
+        print(f"\n{'=' * 70}")
         print(f"  {symbol}")
-        print(f"{'━' * 70}")
+        print(f"{'=' * 70}")
 
         # Load and prepare data
         df = load_data(symbol, TIMEFRAME)
@@ -86,7 +87,7 @@ def run_optimization(symbols: list = None, n_folds: int = 5):
 
         for strat_key in FOCUS_STRATEGIES:
             strat_name = STRATEGY_NAMES[strat_key]
-            print(f"\n  ▸ Optimizing: {strat_name} ({len(folds)} folds)")
+            print(f"\n  > Optimizing: {strat_name} ({len(folds)} folds)")
 
             fold_results = []
 
@@ -125,13 +126,13 @@ def run_optimization(symbols: list = None, n_folds: int = 5):
                 test_s = test_metrics["sharpe_ratio"]
                 print(
                     f"    Fold {fold_num}: "
-                    f"Train Sharpe={train_s:.3f} → Test Sharpe={test_s:.3f}, "
+                    f"Train Sharpe={train_s:.3f} -> Test Sharpe={test_s:.3f}, "
                     f"Return={test_metrics['total_return_pct']:+.2f}%, "
                     f"DD={test_metrics['max_drawdown_pct']:.1f}%"
                 )
 
             if not fold_results:
-                print(f"    ✗ No valid results across folds")
+                print(f"    X No valid results across folds")
                 continue
 
             # ── Aggregate across folds ──
@@ -148,9 +149,9 @@ def run_optimization(symbols: list = None, n_folds: int = 5):
             best_params = best_fold["params"]
             param_names = list(PARAM_GRIDS[strat_key].keys())
 
-            print(f"\n    {'─' * 55}")
+            print(f"\n    {'-' * 55}")
             print(f"    Rolling Walk-Forward Summary ({len(fold_results)} folds):")
-            print(f"    {'─' * 55}")
+            print(f"    {'-' * 55}")
             print(f"    Avg Test Sharpe:    {avg_test_sharpe:>8.3f} (±{std_test_sharpe:.3f})")
             print(f"    Avg Test Return:    {avg_test_return:>+7.2f}%")
             print(f"    Avg Test MaxDD:     {avg_test_dd:>8.2f}%")
@@ -162,11 +163,11 @@ def run_optimization(symbols: list = None, n_folds: int = 5):
             if std_test_sharpe > abs(avg_test_sharpe) and avg_test_sharpe > 0:
                 print(f"    ⚠️  High variance — alpha may be regime-dependent")
             elif positive_folds == len(fold_results) and avg_test_sharpe > 0.5:
-                print(f"    ✓  Consistent alpha across all folds!")
+                print(f"    OK  Consistent alpha across all folds!")
             elif positive_folds >= len(fold_results) * 0.6 and avg_test_sharpe > 0:
                 print(f"    ◆  Moderately stable alpha")
             elif avg_test_sharpe <= 0:
-                print(f"    ✗  Negative average Sharpe — no alpha")
+                print(f"    X  Negative average Sharpe — no alpha")
 
             # Store aggregated result
             result = {
@@ -206,7 +207,7 @@ def run_optimization(symbols: list = None, n_folds: int = 5):
         f"{'Avg Sharpe':>10} {'±Std':>8} "
         f"{'Pos Folds':>10}"
     )
-    print(f"  {'─' * 65}")
+    print(f"  {'-' * 65}")
 
     for _, row in results_df.iterrows():
         print(
@@ -230,7 +231,7 @@ def run_optimization(symbols: list = None, n_folds: int = 5):
             param_names = list(PARAM_GRIDS[row["strategy_key"]].keys())
             params_str = ", ".join([f"{k}={row[f'param_{k}']}" for k in param_names])
             print(
-                f"\n  ★ {row['symbol']} — {row['strategy']}"
+                f"\n  * {row['symbol']} — {row['strategy']}"
                 f"\n    Best Params: {params_str}, SL={row['stop_loss']:.0%}"
                 f"\n    Avg Sharpe={row['avg_test_sharpe']:.3f} (±{row['std_test_sharpe']:.3f}), "
                 f"Avg Return={row['avg_test_return']:+.2f}%, "

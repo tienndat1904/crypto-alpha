@@ -1,8 +1,8 @@
 """
-Alpha Comparison Runner
-========================
-Backtests all 5 strategies on multiple coins and timeframes,
-then produces a comparison report.
+Spot Backtest Runner (Long-Only)
+=================================
+Backtests all strategies on multiple coins using LONG-ONLY signals.
+Spot trading cannot short, so signal -1 is treated as exit (0).
 
 Usage:
     python -m strategies.run_backtest
@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import json
 import sys
 sys.path.insert(0, ".")
 
@@ -22,7 +23,7 @@ from loguru import logger
 from config.settings import COIN_UNIVERSE, DATABASE_URL, LOG_FILE, SLIPPAGE_PCT
 from data.models import engine
 from backtest import BacktestEngine, walk_forward_split
-from strategies.technical_alphas import STRATEGIES
+from strategies.technical_alphas import SPOT_STRATEGIES as STRATEGIES
 from utils.indicators import add_all_indicators
 
 logger.add(LOG_FILE, rotation="10 MB", level="INFO")
@@ -42,12 +43,16 @@ def load_data(symbol: str, timeframe: str) -> pd.DataFrame:
     return df
 
 
-def run_single(symbol: str, timeframe: str, strategy_name: str) -> dict:
-    """Run one strategy on one symbol/timeframe with walk-forward validation."""
+def run_single(symbol: str, timeframe: str, strategy_name: str) -> tuple:
+    """Run one strategy on one symbol/timeframe with walk-forward validation.
+
+    Returns:
+        (metrics_dict, BacktestEngine) or (None, None) if not enough data.
+    """
     df = load_data(symbol, timeframe)
     if len(df) < 200:
         logger.warning(f"Not enough data for {symbol} {timeframe}: {len(df)} rows")
-        return None
+        return None, None
 
     df = add_all_indicators(df)
     df = df.dropna()
@@ -63,13 +68,14 @@ def run_single(symbol: str, timeframe: str, strategy_name: str) -> dict:
     signals = signal_func(df)
     test_signals = signals.reindex(test_df.index)
 
-    # Backtest on test set only
+    # Backtest on test set only (spot: long-only, no leverage)
     bt = BacktestEngine(
         test_df,
         initial_capital=500,
         fee=0.001,
         slippage_pct=SLIPPAGE_PCT,
-        stop_loss_pct=0.05,
+        stop_loss_pct=0.03,
+        leverage=1,
     )
     bt.run(test_signals)
     metrics = bt.get_metrics()
@@ -78,8 +84,9 @@ def run_single(symbol: str, timeframe: str, strategy_name: str) -> dict:
     metrics["timeframe"] = timeframe
     metrics["strategy"] = strategy["name"]
     metrics["strategy_key"] = strategy_name
+    metrics["split_date"] = str(test_df.index[0].date())
 
-    return metrics
+    return metrics, bt
 
 
 def run_comparison(
@@ -91,19 +98,21 @@ def run_comparison(
     symbols = symbols or ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT"]
 
     all_results = []
+    equity_curves = {}
 
-    print(f"\nRunning {len(STRATEGIES)} strategies on {len(symbols)} coins ({timeframe})")
+    print(f"\n[SPOT BACKTEST - Long Only]")
+    print(f"Running {len(STRATEGIES)} strategies on {len(symbols)} coins ({timeframe})")
     print("=" * 70)
 
     for symbol in symbols:
-        print(f"\n{'─' * 70}")
+        print(f"\n{'-' * 70}")
         print(f"  {symbol}")
-        print(f"{'─' * 70}")
+        print(f"{'-' * 70}")
 
         for strat_key, strat_info in STRATEGIES.items():
             try:
-                result = run_single(symbol, timeframe, strat_key)
-                if result:
+                result, bt = run_single(symbol, timeframe, strat_key)
+                if result and bt is not None:
                     all_results.append(result)
                     sharpe = result["sharpe_ratio"]
                     ret = result["total_return_pct"]
@@ -116,6 +125,29 @@ def run_comparison(
                         f"MaxDD={dd:>7.2f}%  "
                         f"Trades={trades:>4}"
                     )
+
+                    # Collect equity curve data
+                    res_df = bt.results
+                    returns = res_df["strategy_return"]
+                    rolling_sharpe = (
+                        returns.rolling(window=126, min_periods=30).mean()
+                        / returns.rolling(window=126, min_periods=30).std()
+                    ) * np.sqrt(365 * 6)  # annualized for 4H
+                    turnover = res_df["trade"].abs().rolling(window=126, min_periods=30).mean()
+
+                    curve_key = f"{symbol}|{strat_key}"
+                    equity_curves[curve_key] = {
+                        "symbol": symbol,
+                        "strategy": strat_info["name"],
+                        "dates": [str(d) for d in res_df.index.tolist()],
+                        "equity": res_df["equity"].tolist(),
+                        "buy_hold": res_df["buy_hold_equity"].tolist(),
+                        "drawdown": res_df["drawdown"].tolist(),
+                        "cum_pnl": (res_df["equity"] - bt.initial_capital).tolist(),
+                        "rolling_sharpe": rolling_sharpe.fillna(0).tolist(),
+                        "rolling_turnover": turnover.fillna(0).tolist(),
+                        "split_date": result.get("split_date", ""),
+                    }
             except Exception as e:
                 logger.error(f"Failed {symbol} {strat_key}: {e}")
                 print(f"  {strat_info['name']:<35} ERROR: {e}")
@@ -178,9 +210,16 @@ def run_comparison(
         print("  None found. Consider adjusting parameters or strategies.")
 
     # Save results
-    output_file = "backtest_results.csv"
+    output_file = "backtest_spot_results.csv"
     results_df.to_csv(output_file, index=False)
     print(f"\nDetailed results saved to: {output_file}")
+
+    # Save equity curves for dashboard
+    if equity_curves:
+        equity_file = "backtest_spot_equity.json"
+        with open(equity_file, "w") as f:
+            json.dump(equity_curves, f, default=str)
+        print(f"Equity curves saved to: {equity_file}")
 
     return results_df
 
@@ -197,7 +236,7 @@ def main():
 
     if args.symbol and args.strategy:
         # Single run with detailed report
-        result = run_single(args.symbol, args.timeframe, args.strategy)
+        result, _ = run_single(args.symbol, args.timeframe, args.strategy)
         if result:
             # Re-run to show report and plot
             df = load_data(args.symbol, args.timeframe)
@@ -205,7 +244,7 @@ def main():
             _, test_df = walk_forward_split(df, 0.7)
             signals = STRATEGIES[args.strategy]["func"](df).reindex(test_df.index)
 
-            bt = BacktestEngine(test_df, initial_capital=500, fee=0.001, stop_loss_pct=0.05)
+            bt = BacktestEngine(test_df, initial_capital=500, fee=0.001, stop_loss_pct=0.03, leverage=1)
             bt.run(signals)
             bt.print_report()
             bt.plot_equity(f"{args.symbol} — {STRATEGIES[args.strategy]['name']}")

@@ -35,11 +35,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from loguru import logger
 
-from config.settings import LOG_FILE, UPDATE_INTERVAL_HOURS
+from config.settings import LOG_FILE, UPDATE_INTERVAL_HOURS, VN_TIMEZONE
 from trading.signal_generator import SignalGenerator, ALPHA_CONFIGS
 from trading.risk_manager import RiskManager
 from strategies.onchain_alphas import OnchainSignalFilter
 from utils.telegram import TelegramAlert
+
+try:
+    from trading.price_monitor import PriceMonitor
+except ImportError:
+    PriceMonitor = None
 
 logger.add(LOG_FILE, rotation="10 MB", level="INFO")
 
@@ -49,13 +54,37 @@ SIGNAL_LOG_FILE = Path("logs/signal_history.jsonl")
 class PaperTrader:
     """Automated paper trading bot."""
 
+    # Cooldown: don't re-enter same symbol+direction within N seconds
+    SIGNAL_COOLDOWN_SECS = 4 * 3600  # 4 hours (1 candle)
+
     def __init__(self):
         self.signal_gen = SignalGenerator()
         self.risk_mgr = RiskManager()
         self.onchain_filter = OnchainSignalFilter()
         self.tg = TelegramAlert()
         self._last_daily_report = None
+        self._signal_cooldowns: dict = {}  # {(symbol, direction): timestamp}
+        self.price_monitor = None
         logger.info("PaperTrader initialized (with on-chain filter + Telegram).")
+
+    def _is_on_cooldown(self, symbol: str, signal_val: int) -> bool:
+        """Check if a signal is on cooldown (duplicate within same candle window)."""
+        key = (symbol, signal_val)
+        last_ts = self._signal_cooldowns.get(key)
+        if last_ts is None:
+            return False
+        elapsed = time.time() - last_ts
+        return elapsed < self.SIGNAL_COOLDOWN_SECS
+
+    def _set_cooldown(self, symbol: str, signal_val: int):
+        """Record that a signal was acted upon."""
+        self._signal_cooldowns[(symbol, signal_val)] = time.time()
+        # Clean up old entries
+        now = time.time()
+        self._signal_cooldowns = {
+            k: v for k, v in self._signal_cooldowns.items()
+            if now - v < self.SIGNAL_COOLDOWN_SECS
+        }
 
     def log_signal(self, signal, action, reason="", blocked_reason=""):
         """Write a signal event as a JSON line to SIGNAL_LOG_FILE."""
@@ -74,10 +103,10 @@ class PaperTrader:
             f.write(json.dumps(entry) + "\n")
 
     def send_daily_report(self):
-        """Send a daily report at 08:00 UTC (once per day)."""
-        now = datetime.now(timezone.utc)
+        """Send a daily report at 10:00 Vietnam time (once per day)."""
+        now = datetime.now(VN_TIMEZONE)
         today_key = now.strftime("%Y-%m-%d")
-        if now.hour >= 8 and self._last_daily_report != today_key:
+        if now.hour >= 10 and self._last_daily_report != today_key:
             self._last_daily_report = today_key
             current_prices = {}
             for symbol in ALPHA_CONFIGS:
@@ -94,7 +123,7 @@ class PaperTrader:
         
     def check_and_trade(self):
         """Main loop iteration: check signals, manage positions, execute trades."""
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        now = datetime.now(VN_TIMEZONE).strftime("%Y-%m-%d %H:%M (VN)")
         logger.info(f"{'='*50}")
         logger.info(f"Signal check at {now}")
 
@@ -102,8 +131,8 @@ class PaperTrader:
         can_trade, reason = self.risk_mgr.can_trade()
         if not can_trade:
             logger.warning(f"Trading blocked: {reason}")
-            print(f"\n⛔ Trading blocked: {reason}")
-            self.tg.send(f"⛔ <b>Trading blocked</b>\n{reason}")
+            print(f"\n[BLOCKED] Trading blocked: {reason}")
+            self.tg.send(f"⛔ <b>[Spot] Trading blocked</b>\n{reason}")
             return
 
         # ── Step 2: Check stop-losses on open positions ──
@@ -119,24 +148,27 @@ class PaperTrader:
         for trade in stopped:
             tp_reason = trade.get("reason", "stop_loss")
             if tp_reason == "take_profit_1":
-                print(f"\n🎯 TAKE-PROFIT-1: {trade['symbol']} PnL={trade['pnl_pct']:+.2f}%")
+                print(f"\n[TP1] TAKE-PROFIT-1: {trade['symbol']} PnL={trade['pnl_pct']:+.2f}%")
                 self.tg.send(
                     f"🎯 <b>Take-Profit-1 hit</b>\n"
                     f"{trade['symbol']} PnL={trade['pnl_pct']:+.2f}% (${trade['pnl_usd']:+.2f})"
                 )
             elif tp_reason == "take_profit_2":
-                print(f"\n🎯🎯 TAKE-PROFIT-2: {trade['symbol']} PnL={trade['pnl_pct']:+.2f}%")
+                print(f"\n[TP2] TAKE-PROFIT-2: {trade['symbol']} PnL={trade['pnl_pct']:+.2f}%")
                 self.tg.send(
                     f"🎯🎯 <b>Take-Profit-2 hit</b>\n"
                     f"{trade['symbol']} PnL={trade['pnl_pct']:+.2f}% (${trade['pnl_usd']:+.2f})"
                 )
+            elif tp_reason == "trailing_stop":
+                print(f"\n[TS] TRAILING-STOP: {trade['symbol']} PnL={trade['pnl_pct']:+.2f}%")
+                self.tg.send_stop_loss(trade["symbol"], trade["pnl_pct"], trade["pnl_usd"], reason="trailing_stop")
             else:
-                print(f"\n🛑 STOP-LOSS: {trade['symbol']} PnL={trade['pnl_pct']:+.2f}%")
+                print(f"\n[SL] STOP-LOSS: {trade['symbol']} PnL={trade['pnl_pct']:+.2f}%")
                 self.tg.send_stop_loss(trade["symbol"], trade["pnl_pct"], trade["pnl_usd"])
 
         # ── Step 3: Get on-chain regime ──
         regime = self.onchain_filter.get_current_regime()
-        print(f"\n  📡 On-chain: F&G={regime['fng_value']} ({regime['regime']}), "
+        print(f"\n  [OnChain] F&G={regime['fng_value']} ({regime['regime']}), "
               f"buy_mult={regime['buy_multiplier']}x, sell_mult={regime['sell_multiplier']}x")
 
         # ── Step 4: Generate signals ──
@@ -148,7 +180,7 @@ class PaperTrader:
             config = ALPHA_CONFIGS[symbol]
             has_position = symbol in self.risk_mgr.state["open_positions"]
 
-            print(f"\n{'─'*50}")
+            print(f"\n{'-'*50}")
             print(f"  {symbol} @ ${sig['close']:,.4f}")
             print(f"  ROC(10)={sig['roc_10']:.2f} | RSI={sig['rsi']:.1f} | "
                   f"Vol Ratio={sig['volume_ratio']:.2f}")
@@ -158,29 +190,44 @@ class PaperTrader:
 
             # ── Entry Logic (with on-chain + correlation filter) ──
             if signal_val != 0 and not has_position:
+                # Check cooldown (prevent duplicate signals on same candle)
+                if self._is_on_cooldown(symbol, signal_val):
+                    direction = "LONG" if signal_val == 1 else "SHORT"
+                    logger.debug(f"  {symbol}: {direction} signal on cooldown, skipping")
+                    print(f"  -- {direction} signal on cooldown, skipping")
+                    self.log_signal(sig, "blocked", reason=sig.get("reason", ""), blocked_reason="cooldown")
+                    continue
+
                 # Check correlation filter
                 can_open, corr_reason = self.risk_mgr.can_trade(symbol=symbol)
                 if not can_open:
-                    print(f"  ⛔ {corr_reason}")
+                    print(f"  [BLOCKED] {corr_reason}")
                     self.log_signal(sig, "blocked", reason=sig.get("reason", ""), blocked_reason=corr_reason)
                     continue
 
                 # Check on-chain filter
                 enhanced = self.onchain_filter.enhance_signal(signal_val, symbol)
-                print(f"  🔍 On-chain filter: {enhanced['reason']}")
+                print(f"  [Filter] On-chain: {enhanced['reason']}")
 
                 if enhanced["enhanced_signal"] == 0:
                     # Signal blocked by on-chain
-                    print(f"  ⛔ Trade BLOCKED by on-chain filter")
+                    print(f"  [BLOCKED] Trade blocked by on-chain filter")
                     self.log_signal(sig, "blocked", reason=sig.get("reason", ""), blocked_reason="on-chain filter")
                     continue
 
-                side = "long" if signal_val == 1 else "short"
+                # Spot only supports LONG
+                if signal_val != 1:
+                    print(f"  [SKIP] Spot does not support SHORT")
+                    continue
+                side = "long"
                 pos = self.risk_mgr.open_position(
                     symbol=symbol,
                     side=side,
                     entry_price=sig["close"],
                     stop_loss_pct=sig["stop_loss"],
+                    atr_pct=sig.get("atr_pct"),
+                    regime=sig.get("regime"),
+                    strategy=sig.get("strategy", ""),
                 )
                 sizing = self.risk_mgr.calculate_position_size(
                     symbol, sig["close"], sig["stop_loss"]
@@ -199,7 +246,8 @@ class PaperTrader:
                     f"confidence={enhanced['confidence']:.0%}\n"
                     f"Reason: {sig['reason']}"
                 )
-                print(f"\n  {emoji} OPENED {direction}: ${sizing['size_usdt']:.2f} "
+                dir_tag = "+" if side == "long" else "-"
+                print(f"\n  [{dir_tag}] OPENED {direction}: ${sizing['size_usdt']:.2f} "
                       f"(confidence={enhanced['confidence']:.0%})")
                 self.tg.send_trade_opened(
                     symbol=symbol, side=side,
@@ -211,6 +259,7 @@ class PaperTrader:
                     confidence=enhanced.get("confidence", 0),
                 )
                 self.log_signal(sig, "opened", reason=sig.get("reason", ""))
+                self._set_cooldown(symbol, signal_val)
 
             # ── Exit Logic ──
             elif signal_val == 0 and has_position:
@@ -220,8 +269,8 @@ class PaperTrader:
                     reason="signal_exit",
                 )
                 if trade:
-                    emoji = "✅" if trade["pnl_usd"] > 0 else "❌"
-                    print(f"\n  {emoji} CLOSED: PnL={trade['pnl_pct']:+.2f}%")
+                    result_tag = "WIN" if trade["pnl_usd"] > 0 else "LOSS"
+                    print(f"\n  [{result_tag}] CLOSED: PnL={trade['pnl_pct']:+.2f}%")
                     self.tg.send_trade_closed(
                         symbol=symbol,
                         pnl_pct=trade["pnl_pct"],
@@ -236,12 +285,16 @@ class PaperTrader:
                 unrealized = (sig["close"] - pos["entry_price"]) / pos["entry_price"]
                 if pos["side"] == "short":
                     unrealized = -unrealized
-                print(f"  📊 Holding {pos['side']} — Unrealized: {unrealized*100:+.2f}%")
+                print(f"  [HOLD] {pos['side']} -- Unrealized: {unrealized*100:+.2f}%")
                 self.log_signal(sig, "no_action", reason="holding")
 
             else:
-                print(f"  ⚪ No action")
+                print(f"  [--] No action")
                 self.log_signal(sig, "no_action", reason="no signal")
+
+        # Update WebSocket subscriptions after position changes
+        if self.price_monitor:
+            self.price_monitor.update_subscriptions()
 
         # Print summary
         print(f"\n{self.risk_mgr.get_summary()}")
@@ -256,6 +309,16 @@ class PaperTrader:
         print("=" * 50)
 
         self.tg.send_bot_started(list(ALPHA_CONFIGS.keys()))
+
+        # Start real-time price monitor (WebSocket)
+        if PriceMonitor is not None:
+            try:
+                self.price_monitor = PriceMonitor(self.risk_mgr, self.tg)
+                self.price_monitor.start()
+                logger.info("Real-time price monitor started (WebSocket)")
+            except Exception as e:
+                logger.warning(f"Price monitor not started: {e}")
+                self.price_monitor = None
 
         # Start Telegram command listener
         try:
@@ -273,38 +336,36 @@ class PaperTrader:
         try:
             while True:
                 try:
-                    # Update data at start of each loop
-                    try:
-                        self.signal_gen.update_data()
-                    except Exception as e:
-                        logger.warning(f"Data update failed: {e}")
-
                     self.check_and_trade()
                     self.send_daily_report()
                     consecutive_errors = 0
 
                     logger.info(f"Sleeping {interval_hours}h until next check...")
-                    print(f"\n⏳ Next check in {interval_hours} hours... (Ctrl+C to stop)")
+                    print(f"\n[...] Next check in {interval_hours} hours... (Ctrl+C to stop)")
                     time.sleep(interval_hours * 3600)
                 except KeyboardInterrupt:
                     raise
                 except Exception as e:
                     consecutive_errors += 1
                     logger.error(f"Error in main loop ({consecutive_errors}x): {e}")
-                    print(f"\n⚠️ Error: {e}. Retrying in 60s...")
+                    print(f"\n[ERROR] {e}. Retrying in 60s...")
                     if consecutive_errors >= 5:
                         self.tg.send(
-                            f"🚨 <b>Bot alert</b>\n"
+                            f"🚨 <b>[Spot] Bot alert</b>\n"
                             f"{consecutive_errors} consecutive errors!\n"
                             f"Last: {e}"
                         )
                     time.sleep(60)
         except KeyboardInterrupt:
-            print("\n\n🛑 Bot stopped by user.")
+            print("\n\n[STOP] Bot stopped by user.")
+            if self.price_monitor:
+                self.price_monitor.stop()
             self.tg.send_bot_stopped()
         except Exception as e:
             logger.critical(f"Bot crashed: {e}")
-            self.tg.send(f"💀 <b>Bot CRASHED</b>\n{e}")
+            if self.price_monitor:
+                self.price_monitor.stop()
+            self.tg.send(f"💀 <b>[Spot] Bot CRASHED</b>\n{e}")
             raise
 
     def show_status(self):
@@ -323,20 +384,20 @@ class PaperTrader:
         print("=" * 70)
         print(f"  {'#':<4} {'Symbol':<12} {'Side':<6} {'Entry':>10} {'Exit':>10} "
               f"{'PnL %':>8} {'PnL $':>8} {'Reason':<15}")
-        print(f"  {'─'*70}")
+        print(f"  {'-'*70}")
 
         total_pnl = 0
         for i, t in enumerate(history, 1):
             total_pnl += t["pnl_usd"]
-            emoji = "✅" if t["pnl_usd"] > 0 else "❌"
+            tag = "W" if t["pnl_usd"] > 0 else "L"
             print(
-                f"  {emoji}{i:<3} {t['symbol']:<12} {t['side']:<6} "
+                f"  [{tag}]{i:<3} {t['symbol']:<12} {t['side']:<6} "
                 f"${t['entry_price']:>9.4f} ${t['exit_price']:>9.4f} "
                 f"{t['pnl_pct']:>+7.2f}% ${t['pnl_usd']:>+7.2f} "
                 f"{t['reason']:<15}"
             )
 
-        print(f"  {'─'*70}")
+        print(f"  {'-'*70}")
         print(f"  Total PnL: ${total_pnl:+.2f}")
         print(f"  Current Capital: ${self.risk_mgr.state['capital']:.2f}")
         print("=" * 70)
@@ -355,7 +416,7 @@ def _show_signal_log(limit=50):
     print("  SIGNAL HISTORY (last {} entries)".format(len(entries)))
     print("=" * 90)
     print(f"  {'Timestamp':<22} {'Symbol':<12} {'Sig':>4} {'Action':<10} {'Price':>12} {'Reason':<20} {'Blocked':<15}")
-    print(f"  {'─'*90}")
+    print(f"  {'-'*90}")
     for e in entries:
         ts = e.get("timestamp", "")[:19]
         print(
@@ -388,9 +449,9 @@ def main():
 
     if args.test_telegram:
         if bot.tg.test_connection():
-            print("✓ Telegram connected! Check your bot chat.")
+            print("[OK] Telegram connected! Check your bot chat.")
         else:
-            print("✗ Telegram not configured or connection failed.")
+            print("[FAIL] Telegram not configured or connection failed.")
             print("  Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env")
         return
 
@@ -409,10 +470,10 @@ def main():
     elif args.history:
         bot.show_history()
     elif args.reset:
-        confirm = input("⚠️  Reset all trading state? (yes/no): ")
+        confirm = input("Reset all trading state? (yes/no): ")
         if confirm.lower() == "yes":
             bot.risk_mgr.reset()
-            print("✓ State reset.")
+            print("[OK] State reset.")
         else:
             print("Cancelled.")
     else:
