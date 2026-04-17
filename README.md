@@ -41,7 +41,7 @@ crypto-alpha/
 ├── models/                # ML model artifacts
 ├── tests/                 # Unit tests
 ├── dashboard.py           # Streamlit dashboard
-├── watchdog.py            # Bot watchdog (auto-restart)
+├── bot_watchdog.py            # Bot watchdog (auto-restart)
 └── requirements.txt
 ```
 
@@ -74,7 +74,7 @@ TELEGRAM_CHAT_ID=your_chat_id
 
 ```bash
 # Run via watchdog (recommended - auto-restart on crash)
-python watchdog.py
+python bot_watchdog.py
 
 # Or run individually
 python -m trading.paper_trader --run --interval 0.25

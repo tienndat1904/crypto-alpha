@@ -5,12 +5,12 @@ Monitors paper_trader and futures_trader processes.
 Restarts them if they crash, sends Telegram alert.
 
 Usage:
-    python watchdog.py
+    python bot_watchdog.py
 
 Add to Windows Task Scheduler to run at startup:
     Action: Start a program
     Program: python
-    Arguments: D:\crypto-alpha\watchdog.py
+    Arguments: D:\crypto-alpha\bot_watchdog.py
     Start in: D:\crypto-alpha
 """
 
