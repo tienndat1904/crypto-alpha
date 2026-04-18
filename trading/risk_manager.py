@@ -125,10 +125,15 @@ class RiskManager:
 
     def _current_drawdown(self) -> float:
         peak = self.state["peak_capital"]
-        # Total equity = cash + open position values
+        # Cash + locked equity per open position. For futures, only margin was deducted
+        # from capital, so equity contribution is margin (NOT notional size_usdt — using
+        # notional would inflate equity by leverage and hide the real drawdown).
         total = self.state["capital"]
         for pos in self.state["open_positions"].values():
-            total += pos["size_usdt"]
+            if pos.get("leverage") and pos.get("margin"):
+                total += pos["margin"]
+            else:
+                total += pos["size_usdt"]
         if peak <= 0:
             return 0
         return (total - peak) / peak
@@ -601,13 +606,17 @@ class RiskManager:
                     logger.info(f"Breakeven stop activated {symbol}: stop moved to entry ${entry:.4f}")
 
             # ── Check if stop price is hit ──
+            # Label as trailing_stop only if stop has actually moved closer to price
+            # than the initial stop by >1% buffer. Old code used *1.01 which made the
+            # threshold looser than the initial stop, so every untouched stop was
+            # mislabeled as trailing_stop.
             if side == "long" and price <= pos["stop_price"]:
-                reason = "trailing_stop" if pos["stop_price"] > entry * (1 - pos["stop_loss_pct"] * 1.01) else "stop_loss"
+                reason = "trailing_stop" if pos["stop_price"] > entry * (1 - pos["stop_loss_pct"] * 0.99) else "stop_loss"
                 trade = self.close_position(symbol, price, reason=reason)
                 if trade:
                     closed.append(trade)
             elif side == "short" and price >= pos["stop_price"]:
-                reason = "trailing_stop" if pos["stop_price"] < entry * (1 + pos["stop_loss_pct"] * 1.01) else "stop_loss"
+                reason = "trailing_stop" if pos["stop_price"] < entry * (1 + pos["stop_loss_pct"] * 0.99) else "stop_loss"
                 trade = self.close_position(symbol, price, reason=reason)
                 if trade:
                     closed.append(trade)

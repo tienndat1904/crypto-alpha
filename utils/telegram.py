@@ -136,7 +136,7 @@ class TelegramAlert:
         direction = "LONG" if side == "long" else "SHORT"
 
         msg = (
-            f"{emoji} <b>[Spot] {direction} {symbol}</b>\n"
+            f"{emoji} <b>·[spot] {direction} {symbol}</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"Entry: <code>${entry_price:,.4f}</code>\n"
             f"Size: <code>${size_usdt:.2f}</code>\n"
@@ -150,7 +150,8 @@ class TelegramAlert:
                 msg += f" ({confidence:.0%})"
             msg += "\n"
 
-        self.send(msg)
+        # Spot alerts silent — futures take notification priority
+        self.send(msg, silent=True)
 
     def send_trade_closed(
         self,
@@ -164,7 +165,7 @@ class TelegramAlert:
         emoji = "✅" if pnl_usd > 0 else "❌"
 
         msg = (
-            f"{emoji} <b>[Spot] CLOSED {symbol}</b>\n"
+            f"{emoji} <b>·[spot] CLOSED {symbol}</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"PnL: <code>{pnl_pct:+.2f}%</code> (<code>${pnl_usd:+.2f}</code>)\n"
         )
@@ -173,7 +174,7 @@ class TelegramAlert:
         if capital:
             msg += f"Capital: <code>${capital:.2f}</code>\n"
 
-        self.send(msg)
+        self.send(msg, silent=True)
 
     def send_stop_loss(self, symbol: str, pnl_pct: float, pnl_usd: float, reason: str = "stop_loss"):
         """Send stop-loss or trailing stop alert."""
@@ -184,7 +185,7 @@ class TelegramAlert:
             emoji = "🛑"
             label = "STOP-LOSS"
         msg = (
-            f"{emoji} <b>[Spot] {label} {symbol}</b>\n"
+            f"{emoji} <b>·[spot] {label} {symbol}</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"PnL: <code>{pnl_pct:+.2f}%</code> (<code>${pnl_usd:+.2f}</code>)\n"
         )
@@ -204,7 +205,7 @@ class TelegramAlert:
     def send_kill_switch(self, drawdown: float, capital: float):
         """Send kill switch alert."""
         msg = (
-            f"🚨 <b>[Spot] KILL SWITCH ACTIVATED</b>\n"
+            f"🚨 <b>·[spot] KILL SWITCH ACTIVATED</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"Drawdown: <code>{drawdown:.1%}</code>\n"
             f"Capital: <code>${capital:.2f}</code>\n"
@@ -275,7 +276,7 @@ class TelegramAlert:
         timestamp = datetime.now(VN_TZ).strftime("%Y-%m-%d %H:%M:%S (VN)")
 
         msg = (
-            f"📋 <b>[Spot] BÁO CÁO HÀNG NGÀY</b>\n"
+            f"📋 <b>·[spot] BÁO CÁO HÀNG NGÀY</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🕐 {timestamp}\n\n"
             f"💰 <b>Tài khoản:</b>\n"
@@ -322,7 +323,7 @@ class TelegramAlert:
         coin_count = len(coins)
 
         msg = (
-            f"🤖 <b>[Spot] Paper Trading Bot Started</b>\n"
+            f"🤖 <b>·[spot] Paper Trading Bot Started</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"🕐 {timestamp}\n"
             f"Coins ({coin_count}): {', '.join(coins)}\n"
@@ -335,7 +336,7 @@ class TelegramAlert:
         """Send bot stopped notification with timestamp."""
         timestamp = datetime.now(VN_TZ).strftime("%Y-%m-%d %H:%M:%S (VN)")
         msg = (
-            f"🛑 <b>[Spot] Paper Trading Bot Stopped</b>\n"
+            f"🛑 <b>·[spot] Paper Trading Bot Stopped</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"🕐 {timestamp}\n"
         )

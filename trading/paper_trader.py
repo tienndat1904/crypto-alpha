@@ -132,7 +132,7 @@ class PaperTrader:
         if not can_trade:
             logger.warning(f"Trading blocked: {reason}")
             print(f"\n[BLOCKED] Trading blocked: {reason}")
-            self.tg.send(f"⛔ <b>[Spot] Trading blocked</b>\n{reason}")
+            self.tg.send(f"⛔ <b>·[spot] Trading blocked</b>\n{reason}")
             return
 
         # ── Step 2: Check stop-losses on open positions ──
@@ -351,7 +351,7 @@ class PaperTrader:
                     print(f"\n[ERROR] {e}. Retrying in 60s...")
                     if consecutive_errors >= 5:
                         self.tg.send(
-                            f"🚨 <b>[Spot] Bot alert</b>\n"
+                            f"🚨 <b>·[spot] Bot alert</b>\n"
                             f"{consecutive_errors} consecutive errors!\n"
                             f"Last: {e}"
                         )
@@ -365,7 +365,7 @@ class PaperTrader:
             logger.critical(f"Bot crashed: {e}")
             if self.price_monitor:
                 self.price_monitor.stop()
-            self.tg.send(f"💀 <b>[Spot] Bot CRASHED</b>\n{e}")
+            self.tg.send(f"💀 <b>·[spot] Bot CRASHED</b>\n{e}")
             raise
 
     def show_status(self):
