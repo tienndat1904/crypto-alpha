@@ -42,10 +42,13 @@ data/*.sqlite
 # --- State files ---
 trading/state.json
 trading/futures_state.json
+trading/manual_actions.json
 logs/signal_history.jsonl
 
 # --- Screenshots ---
 dashboard_*.png
+*-view*.png
+trading-tab.png
 
 # --- Playwright ---
 .playwright-mcp/

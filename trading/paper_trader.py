@@ -38,6 +38,7 @@ from loguru import logger
 from config.settings import LOG_FILE, UPDATE_INTERVAL_HOURS, VN_TIMEZONE
 from trading.signal_generator import SignalGenerator, ALPHA_CONFIGS
 from trading.risk_manager import RiskManager
+from trading import manual_actions
 from strategies.onchain_alphas import OnchainSignalFilter
 from utils.telegram import TelegramAlert
 
@@ -121,6 +122,35 @@ class PaperTrader:
             except Exception as e:
                 logger.error(f"Failed to send daily report: {e}")
         
+    def process_manual_actions(self):
+        """Drain user-initiated actions from the dashboard queue."""
+        actions = manual_actions.consume("spot")
+        for a in actions:
+            if a.get("type") != "close":
+                continue
+            symbol = a["symbol"]
+            pct = float(a.get("pct", 1.0))
+            if symbol not in self.risk_mgr.state["open_positions"]:
+                logger.info(f"Manual close skipped — no open position {symbol}")
+                continue
+            try:
+                ticker = self.signal_gen.exchange.fetch_ticker(symbol)
+                price = ticker["last"]
+            except Exception as e:
+                logger.error(f"Manual close: failed to fetch price {symbol}: {e}")
+                continue
+
+            if pct >= 0.999:
+                trade = self.risk_mgr.close_position(symbol, price, reason="manual_close")
+            else:
+                trade = self.risk_mgr._partial_close(symbol, pct, price, "manual_close")
+            if trade:
+                self.tg.send(
+                    f"👤 <b>·[spot] MANUAL CLOSE {symbol} ({pct*100:.0f}%)</b>\n"
+                    f"PnL: <code>{trade['pnl_pct']:+.2f}%</code> "
+                    f"(<code>${trade['pnl_usd']:+.2f}</code>)"
+                )
+
     def check_and_trade(self):
         """Main loop iteration: check signals, manage positions, execute trades."""
         now = datetime.now(VN_TIMEZONE).strftime("%Y-%m-%d %H:%M (VN)")
@@ -342,7 +372,16 @@ class PaperTrader:
 
                     logger.info(f"Sleeping {interval_hours}h until next check...")
                     print(f"\n[...] Next check in {interval_hours} hours... (Ctrl+C to stop)")
-                    time.sleep(interval_hours * 3600)
+                    # Poll manual_actions queue every 30s during the wait window so
+                    # dashboard-initiated closes execute within 30s instead of 15min.
+                    sleep_until = time.time() + interval_hours * 3600
+                    while time.time() < sleep_until:
+                        try:
+                            self.process_manual_actions()
+                        except Exception as ma_err:
+                            logger.error(f"Manual action processing error: {ma_err}")
+                        remaining = sleep_until - time.time()
+                        time.sleep(min(30, max(1, remaining)))
                 except KeyboardInterrupt:
                     raise
                 except Exception as e:

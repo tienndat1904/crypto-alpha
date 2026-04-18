@@ -20,6 +20,8 @@ from plotly.subplots import make_subplots
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
+from trading import manual_actions
+
 VN_TZ = timezone(timedelta(hours=7))
 
 try:
@@ -1432,6 +1434,26 @@ with tab_trading:
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
+
+                    # --- Manual close controls ---
+                    pct_key = f"spot_close_pct_{sym}"
+                    pct = st.slider(
+                        f"{sym} — Close %", 10, 100, 100, 5,
+                        key=pct_key, label_visibility="collapsed",
+                    )
+                    bcol1, bcol2 = st.columns(2)
+                    if bcol1.button(f"Đóng {pct}%", key=f"spot_close_btn_{sym}", use_container_width=True):
+                        manual_actions.append_close("spot", sym, pct / 100)
+                        st.success(f"⏳ Queued: đóng {pct}% {sym} (≤30s)")
+                        st.rerun()
+                    if bcol2.button("Đóng 100%", key=f"spot_close_all_{sym}",
+                                    use_container_width=True, type="primary"):
+                        manual_actions.append_close("spot", sym, 1.0)
+                        st.success(f"⏳ Queued: đóng 100% {sym} (≤30s)")
+                        st.rerun()
+                    _pending = manual_actions.pending_for("spot", sym)
+                    if _pending:
+                        st.caption(f"⏳ {len(_pending)} pending action(s) — bot xử lý trong ≤30s")
             else:
                 st.markdown(f"""
                 <div style="background:#1E2329;border:1px solid #2B3139;border-radius:12px;
@@ -1907,6 +1929,29 @@ with tab_trading:
                     }
                     f_pos_rows.append(row)
                 st.dataframe(pd.DataFrame(f_pos_rows), use_container_width=True, hide_index=True)
+
+                # --- Manual close controls (one row per futures position) ---
+                st.markdown("##### 🔥 Đóng vị thế thủ công (Futures)")
+                for fsym in list(f_open_pos.keys()):
+                    fcol_lbl, fcol_pct, fcol_b1, fcol_b2 = st.columns([2, 3, 2, 2])
+                    fcol_lbl.markdown(f"**{fsym}**")
+                    f_pct_key = f"fut_close_pct_{fsym}"
+                    f_pct = fcol_pct.slider(
+                        f"{fsym} pct", 10, 100, 100, 5,
+                        key=f_pct_key, label_visibility="collapsed",
+                    )
+                    if fcol_b1.button(f"Đóng {f_pct}%", key=f"fut_close_btn_{fsym}", use_container_width=True):
+                        manual_actions.append_close("futures", fsym, f_pct / 100)
+                        st.success(f"⏳ Queued: đóng {f_pct}% {fsym} (≤30s)")
+                        st.rerun()
+                    if fcol_b2.button("Đóng 100%", key=f"fut_close_all_{fsym}",
+                                      use_container_width=True, type="primary"):
+                        manual_actions.append_close("futures", fsym, 1.0)
+                        st.success(f"⏳ Queued: đóng 100% {fsym} (≤30s)")
+                        st.rerun()
+                    _fpending = manual_actions.pending_for("futures", fsym)
+                    if _fpending:
+                        st.caption(f"⏳ {len(_fpending)} pending action(s) — bot xử lý trong ≤30s")
 
                 # --- Charts for Futures Open Positions ---
                 st.markdown(f"""

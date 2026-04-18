@@ -45,6 +45,7 @@ from config.settings import (
 )
 from trading.signal_generator import SignalGenerator, ALPHA_CONFIGS, FUTURES_ALPHA_CONFIGS
 from trading.risk_manager import RiskManager
+from trading import manual_actions
 from strategies.onchain_alphas import OnchainSignalFilter
 from utils.telegram import TelegramAlert
 from data.fetcher import BinanceFetcher
@@ -194,6 +195,65 @@ class FuturesRiskManager(RiskManager):
         )
 
         return position
+
+    def _partial_close(self, symbol, pct, exit_price, reason):
+        """Close a fraction of a futures position. Margin-aware (capital was
+        decremented by margin only at entry, so we return margin*pct + PnL)."""
+        if symbol not in self.state["open_positions"]:
+            return None
+        pct = max(0.01, min(1.0, float(pct)))
+        pos = self.state["open_positions"][symbol]
+        entry = pos["entry_price"]
+        side = pos["side"]
+
+        partial_base = pos["size_base"] * pct
+        partial_notional = pos["size_usdt"] * pct
+        partial_margin = pos.get("margin", pos["size_usdt"] / FUTURES_LEVERAGE) * pct
+
+        if side == "long":
+            pnl_pct = (exit_price - entry) / entry
+        else:
+            pnl_pct = (entry - exit_price) / entry
+        pnl_usd = partial_base * (exit_price - entry)
+        if side == "short":
+            pnl_usd = -pnl_usd
+        pnl_usd -= partial_notional * FUTURES_FEE
+        pnl_usd -= pos.get("funding_paid", 0) * pct
+
+        self.state["capital"] += partial_margin + pnl_usd
+        if self.state["capital"] > self.state["peak_capital"]:
+            self.state["peak_capital"] = self.state["capital"]
+        self.state["total_pnl"] += pnl_usd
+
+        pos["size_base"] = round(pos["size_base"] - partial_base, 6)
+        pos["size_usdt"] = round(pos["size_usdt"] - partial_notional, 2)
+        pos["margin"] = round(pos.get("margin", 0) - partial_margin, 2)
+        pos["funding_paid"] = pos.get("funding_paid", 0) * (1 - pct)
+
+        roe = (pnl_usd / partial_margin * 100) if partial_margin > 0 else 0
+        trade_record = {
+            "symbol": symbol,
+            "side": side,
+            "entry_price": entry,
+            "exit_price": exit_price,
+            "partial_pct": round(pct, 3),
+            "size_base": round(partial_base, 6),
+            "size_usdt": round(partial_notional, 2),
+            "margin": round(partial_margin, 2),
+            "pnl_pct": round(pnl_pct * 100, 3),
+            "pnl_usd": round(pnl_usd, 2),
+            "roe": round(roe, 2),
+            "reason": reason,
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "mode": "futures",
+        }
+        self.state["trade_history"].append(trade_record)
+        self._save_state()
+        logger.info(
+            f"PARTIAL CLOSE {symbol} Futures ({pct*100:.0f}%): {reason}, "
+            f"PnL=${pnl_usd:+.2f}, ROE={roe:+.1f}%"
+        )
+        return trade_record
 
     def close_position(self, symbol, exit_price, reason="signal"):
         """Close a futures position and compute leveraged PnL."""
@@ -354,6 +414,37 @@ class FuturesPaperTrader:
 
         self.tg.send_daily_report(self.risk_mgr.state, current_prices)
         self._last_daily_report = today
+
+    def process_manual_actions(self):
+        """Drain user-initiated actions from the dashboard queue."""
+        actions = manual_actions.consume("futures")
+        for a in actions:
+            if a.get("type") != "close":
+                continue
+            symbol = a["symbol"]
+            pct = float(a.get("pct", 1.0))
+            if symbol not in self.risk_mgr.state["open_positions"]:
+                logger.info(f"Manual close skipped — no open position {symbol}")
+                continue
+            try:
+                ticker = self.signal_gen.exchange.fetch_ticker(symbol)
+                price = ticker["last"]
+            except Exception as e:
+                logger.error(f"Manual close: failed to fetch price {symbol}: {e}")
+                continue
+
+            if pct >= 0.999:
+                trade = self.risk_mgr.close_position(symbol, price, reason="manual_close")
+            else:
+                trade = self.risk_mgr._partial_close(symbol, pct, price, "manual_close")
+            if trade:
+                roe = trade.get("roe", 0)
+                self.tg.send(
+                    f"👤 <b>🔥[FUT] MANUAL CLOSE {symbol} ({pct*100:.0f}%)</b>\n"
+                    f"PnL: <code>{trade['pnl_pct']:+.2f}%</code> "
+                    f"(ROE: <code>{roe:+.1f}%</code>)\n"
+                    f"(<code>${trade['pnl_usd']:+.2f}</code>)"
+                )
 
     def check_and_trade(self):
         now = datetime.now(VN_TIMEZONE).strftime("%Y-%m-%d %H:%M (VN)")
@@ -572,7 +663,16 @@ class FuturesPaperTrader:
                     error_count = 0
                     logger.info(f"Sleeping {interval_hours}h until next check...")
                     print(f"\n[...] Next check in {interval_hours} hours...")
-                    time.sleep(interval_hours * 3600)
+                    # Poll manual_actions queue every 30s during the wait window so
+                    # dashboard-initiated closes execute within 30s instead of 15min.
+                    sleep_until = time.time() + interval_hours * 3600
+                    while time.time() < sleep_until:
+                        try:
+                            self.process_manual_actions()
+                        except Exception as ma_err:
+                            logger.error(f"Manual action processing error: {ma_err}")
+                        remaining = sleep_until - time.time()
+                        time.sleep(min(30, max(1, remaining)))
                 except KeyboardInterrupt:
                     raise
                 except Exception as e:
