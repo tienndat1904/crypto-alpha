@@ -88,9 +88,9 @@ UPDATE_INTERVAL_HOURS = 4                  # Auto-update frequency
 # ═══════════════════════════════════════════
 INITIAL_CAPITAL = 500                      # USD
 MAX_RISK_PER_TRADE = 0.02                  # 2% of capital
-MAX_POSITIONS = 3                          # Simultaneous positions
+MAX_POSITIONS = 6                          # Simultaneous positions (per mode: 6 spot + 6 futures)
 MAX_DRAWDOWN = 0.15                        # 15% -> kill switch
-MAX_CORRELATED_POSITIONS = 2              # Max same-sector positions
+MAX_CORRELATED_POSITIONS = 3              # Max same-sector positions
 STOP_LOSS_ATR_MULTIPLIER = 1.5            # SL = 1.5x ATR
 CORRELATION_THRESHOLD = 0.75              # Block new position if corr > 0.75 with existing
 CORRELATION_LOOKBACK_DAYS = 30            # Days to compute rolling correlation
