@@ -967,7 +967,7 @@ if _view_mode == "Spot":
     _hero_trades = _spot_trades
     _hero_wins = _spot_wins
     _hero_positions = _spot_positions
-    _hero_max_pos = 3
+    _hero_max_pos = MAX_POSITIONS
     _hero_badge = "SPOT"
 elif _view_mode == "Futures":
     _hero_equity = _fut_equity
@@ -975,7 +975,7 @@ elif _view_mode == "Futures":
     _hero_trades = _fut_trades
     _hero_wins = _fut_wins
     _hero_positions = _fut_positions
-    _hero_max_pos = 3
+    _hero_max_pos = MAX_POSITIONS
     _hero_badge = f"FUTURES {_fut_leverage}x"
 else:
     _hero_equity = _total_equity
@@ -983,7 +983,7 @@ else:
     _hero_trades = _total_trades
     _hero_wins = _total_wins
     _hero_positions = _total_positions
-    _hero_max_pos = 6
+    _hero_max_pos = MAX_POSITIONS * 2
     _hero_badge = "TOTAL"
 
 _hero_wr = (_hero_wins / _hero_trades * 100) if _hero_trades > 0 else 0
