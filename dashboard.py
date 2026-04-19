@@ -21,6 +21,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 from trading import manual_actions
+from config.settings import MAX_POSITIONS
 
 VN_TZ = timezone(timedelta(hours=7))
 
@@ -1345,7 +1346,7 @@ with tab_trading:
         m1, m2, m3, m4, m5, m6 = st.columns(6)
         m1.metric(t("equity"), f"${total_equity:.2f}", f"${total_pnl:+.2f}")
         m2.metric(t("drawdown"), f"{drawdown:.1%}")
-        m3.metric(t("open_positions"), f"{open_count}/3")
+        m3.metric(t("open_positions"), f"{open_count}/{MAX_POSITIONS}")
         m4.metric(t("total_trades"), total_trades_count)
         m5.metric(t("win_rate"), f"{win_rate:.0f}%")
         m6.metric(t("consec_losses"), state["consecutive_losses"])
@@ -1862,7 +1863,7 @@ with tab_trading:
             fm1.metric(t("equity"), f"${f_total_equity:.2f}", f"${f_total_pnl:+.2f}")
             fm2.metric(t("leverage"), f"{f_leverage}x")
             fm3.metric(t("margin_used"), f"${f_margin_used:.2f}")
-            fm4.metric(t("open_positions"), f"{f_open_count}")
+            fm4.metric(t("open_positions"), f"{f_open_count}/{MAX_POSITIONS}")
             fm5.metric(t("win_rate"), f"{f_win_rate:.0f}%")
             fm6.metric(t("drawdown"), f"{f_drawdown:.1%}")
 
