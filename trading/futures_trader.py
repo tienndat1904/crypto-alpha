@@ -181,8 +181,12 @@ class FuturesRiskManager(RiskManager):
 
         self.state["open_positions"][symbol] = position
 
-        # Deduct margin (not full notional) from capital
-        self.state["capital"] -= sizing["margin"]
+        # Deduct margin + entry fee (fee is on notional, not margin) from capital.
+        # Exit fee is taken at close; without entry fee here, capital drifted
+        # positive vs realized PnL accumulator.
+        entry_fee = sizing["size_usdt"] * FUTURES_FEE
+        self.state["capital"] -= sizing["margin"] + entry_fee
+        self.state["total_pnl"] -= entry_fee
 
         self._save_state()
 

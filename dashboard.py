@@ -910,12 +910,44 @@ with _lang_col2:
 # ── Hero Header ──
 _now_str = datetime.now(VN_TZ).strftime("%H:%M (VN)")
 
+# Live tickers used for MTM equity. Cached 15min (matches dashboard refresh).
+_tickers = fetch_tickers()
+
+
+def _mark_price(sym: str, fallback: float) -> float:
+    t = _tickers.get(sym) if _tickers else None
+    if t and t.get("last"):
+        return t["last"]
+    return fallback
+
+
+def _spot_pos_mtm(pos: dict) -> float:
+    """Current market value of a spot position (size_base * mark)."""
+    mark = _mark_price(pos.get("symbol", ""), pos.get("entry_price", 0))
+    return pos.get("size_base", 0) * mark
+
+
+def _fut_pos_mtm(pos: dict) -> float:
+    """Margin + unrealized PnL on the notional."""
+    margin = pos.get("margin", pos.get("size_usdt", 0) / pos.get("leverage", 3))
+    entry = pos.get("entry_price", 0)
+    mark = _mark_price(pos.get("symbol", ""), entry)
+    size_base = pos.get("size_base", 0)
+    if pos.get("side") == "short":
+        upnl = (entry - mark) * size_base
+    else:
+        upnl = (mark - entry) * size_base
+    return margin + upnl
+
+
 # Load Spot state
 _spot_state = load_state()
+_spot_initial = _spot_state.get("initial_capital", 500)
 _spot_equity = _spot_state["capital"]
-for _p in _spot_state.get("open_positions", {}).values():
-    _spot_equity += _p.get("size_usdt", 0)
-_spot_pnl = _spot_state.get("total_pnl", 0)
+for _sym, _p in _spot_state.get("open_positions", {}).items():
+    _p_full = {**_p, "symbol": _p.get("symbol", _sym)}
+    _spot_equity += _spot_pos_mtm(_p_full)
+_spot_pnl = _spot_equity - _spot_initial
 _spot_trades = _spot_state.get("total_trades", 0)
 _spot_wins = _spot_state.get("total_wins", 0)
 _spot_positions = len(_spot_state.get("open_positions", {}))
@@ -923,10 +955,12 @@ _spot_positions = len(_spot_state.get("open_positions", {}))
 # Load Futures state
 _fut_state = load_futures_state()
 if _fut_state:
+    _fut_initial = _fut_state.get("initial_capital", 500)
     _fut_equity = _fut_state.get("capital", 0)
-    for _fp in _fut_state.get("open_positions", {}).values():
-        _fut_equity += _fp.get("margin", _fp.get("size_usdt", 0) / _fp.get("leverage", 3))
-    _fut_pnl = _fut_state.get("total_pnl", 0)
+    for _sym, _fp in _fut_state.get("open_positions", {}).items():
+        _fp_full = {**_fp, "symbol": _fp.get("symbol", _sym)}
+        _fut_equity += _fut_pos_mtm(_fp_full)
+    _fut_pnl = _fut_equity - _fut_initial
     _fut_trades = _fut_state.get("total_trades", 0)
     _fut_wins = _fut_state.get("total_wins", 0)
     _fut_positions = len(_fut_state.get("open_positions", {}))
@@ -935,6 +969,7 @@ if _fut_state:
         _fut_leverage = _fp.get("leverage", 3)
         break
 else:
+    _fut_initial = 0
     _fut_equity = 0
     _fut_pnl = 0
     _fut_trades = 0
@@ -943,8 +978,9 @@ else:
     _fut_leverage = 3
 
 # Totals
+_total_initial = _spot_initial + _fut_initial
 _total_equity = _spot_equity + _fut_equity
-_total_pnl = _spot_pnl + _fut_pnl
+_total_pnl = _total_equity - _total_initial
 _total_trades = _spot_trades + _fut_trades
 _total_wins = _spot_wins + _fut_wins
 _total_positions = _spot_positions + _fut_positions
@@ -1320,17 +1356,19 @@ with tab_trading:
         state = load_state()
         capital = state["capital"]
         peak = state["peak_capital"]
-        total_pnl = state["total_pnl"]
+        initial_cap = state.get("initial_capital", 500)
         total_trades_count = state["total_trades"]
         total_wins = state["total_wins"]
         open_pos = state["open_positions"]
         open_count = len(open_pos)
         history = state.get("trade_history", [])
 
-        # Equity calculation
+        # Equity = capital + MTM of open positions; PnL = equity - initial.
+        # Avoids the realized-only accumulator which misses unrealized + entry fees.
         total_equity = capital
-        for pos in open_pos.values():
-            total_equity += pos.get("size_usdt", 0)
+        for sym, pos in open_pos.items():
+            total_equity += _spot_pos_mtm({**pos, "symbol": pos.get("symbol", sym)})
+        total_pnl = total_equity - initial_cap
         drawdown = (total_equity - peak) / peak if peak > 0 else 0
         win_rate = (total_wins / total_trades_count * 100) if total_trades_count > 0 else 0
 
@@ -1837,7 +1875,7 @@ with tab_trading:
         if futures_state is not None:
             f_capital = futures_state.get("capital", 0)
             f_peak = futures_state.get("peak_capital", 0)
-            f_total_pnl = futures_state.get("total_pnl", 0)
+            f_initial = futures_state.get("initial_capital", 500)
             f_total_trades = futures_state.get("total_trades", 0)
             f_total_wins = futures_state.get("total_wins", 0)
             f_open_pos = futures_state.get("open_positions", {})
@@ -1845,15 +1883,16 @@ with tab_trading:
             f_history = futures_state.get("trade_history", [])
             f_consec_losses = futures_state.get("consecutive_losses", 0)
 
-            # Calculate margin used and equity from open positions
+            # Equity = capital + (margin + uPnL) for each position; PnL = equity - initial.
             f_margin_used = 0
             f_total_equity = f_capital
             f_leverage = 3  # default
-            for pos in f_open_pos.values():
+            for sym, pos in f_open_pos.items():
                 margin = pos.get("margin", pos.get("size_usdt", 0) / pos.get("leverage", 3))
                 f_margin_used += margin
-                f_total_equity += margin
+                f_total_equity += _fut_pos_mtm({**pos, "symbol": pos.get("symbol", sym)})
                 f_leverage = pos.get("leverage", 3)
+            f_total_pnl = f_total_equity - f_initial
             f_drawdown = (f_total_equity - f_peak) / f_peak if f_peak > 0 else 0
             f_win_rate = (f_total_wins / f_total_trades * 100) if f_total_trades > 0 else 0
 
