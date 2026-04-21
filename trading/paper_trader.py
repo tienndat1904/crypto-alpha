@@ -292,7 +292,22 @@ class PaperTrader:
                 self._set_cooldown(symbol, signal_val)
 
             # ── Exit Logic ──
+            # Gate signal-driven exits: require explicit "exit zone" reason +
+            # profit >= 1.0R. Without this, every signal=0 tick closed at tiny
+            # profits (or at small losses before stop), wrecking R:R despite a
+            # high win rate. TP/SL/trailing manage all other exits.
             elif signal_val == 0 and has_position:
+                pos = self.risk_mgr.state["open_positions"][symbol]
+                pnl_pct = (sig["close"] - pos["entry_price"]) / pos["entry_price"]
+                if pos["side"] == "short":
+                    pnl_pct = -pnl_pct
+                stop_pct = pos.get("stop_loss_pct", 0.025)
+                in_exit_zone = "exit zone" in (sig.get("reason") or "").lower()
+                profit_threshold = 1.0 * stop_pct  # 1.0R
+                if not (in_exit_zone and pnl_pct >= profit_threshold):
+                    print(f"  [HOLD] {symbol} signal=0 but pnl={pnl_pct*100:+.2f}% < 1.0R "
+                          f"({profit_threshold*100:.2f}%) — letting TP/SL manage exit")
+                    continue
                 trade = self.risk_mgr.close_position(
                     symbol=symbol,
                     exit_price=sig["close"],

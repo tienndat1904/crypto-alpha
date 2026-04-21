@@ -560,7 +560,7 @@ class FuturesPaperTrader:
                     pnl_pct = -pnl_pct
                 stop_pct = pos.get("stop_loss_pct", 0.025)
                 in_exit_zone = "exit zone" in (sig.get("reason") or "").lower()
-                profit_threshold = 0.8 * stop_pct  # 0.8R
+                profit_threshold = 1.0 * stop_pct  # 1.0R
                 should_close = in_exit_zone and pnl_pct >= profit_threshold
 
                 if should_close:
@@ -579,7 +579,7 @@ class FuturesPaperTrader:
                             f"(<code>${trade['pnl_usd']:+.2f}</code>)"
                         )
                 else:
-                    print(f"  [HOLD] signal=0 but pnl={pnl_pct*100:+.2f}% < 0.8R "
+                    print(f"  [HOLD] signal=0 but pnl={pnl_pct*100:+.2f}% < 1.0R "
                           f"({profit_threshold*100:.2f}%) — letting TP/SL manage exit")
 
             elif has_position:
