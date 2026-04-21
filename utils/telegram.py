@@ -33,6 +33,13 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 
 
+def _position_value(pos: dict) -> float:
+    """Equity contribution of an open position: margin for futures, notional for spot."""
+    if pos.get("leverage") and pos.get("margin"):
+        return pos["margin"]
+    return pos.get("size_usdt", 0)
+
+
 class TelegramAlert:
     """Sends formatted alerts via Telegram bot."""
 
@@ -230,7 +237,7 @@ class TelegramAlert:
         peak = state["peak_capital"]
         total_equity = capital
         for pos in state["open_positions"].values():
-            total_equity += pos["size_usdt"]
+            total_equity += _position_value(pos)
         drawdown = (total_equity - peak) / peak if peak > 0 else 0
         win_rate = (
             state["total_wins"] / state["total_trades"] * 100
@@ -267,7 +274,7 @@ class TelegramAlert:
         # Compute equity
         total_equity = capital
         for pos in open_positions.values():
-            total_equity += pos.get("size_usdt", 0)
+            total_equity += _position_value(pos)
 
         drawdown = (total_equity - peak) / peak if peak > 0 else 0
         win_rate = total_wins / total_trades * 100 if total_trades > 0 else 0
@@ -461,7 +468,7 @@ class TelegramAlert:
 
         total_equity = capital
         for pos in open_positions.values():
-            total_equity += pos.get("size_usdt", 0)
+            total_equity += _position_value(pos)
 
         drawdown = (total_equity - peak) / peak if peak > 0 else 0
         win_rate = total_wins / total_trades * 100 if total_trades > 0 else 0
@@ -495,9 +502,9 @@ class TelegramAlert:
         total_equity = capital
         in_positions = 0.0
         for pos in open_positions.values():
-            size = pos.get("size_usdt", 0)
-            total_equity += size
-            in_positions += size
+            value = _position_value(pos)
+            total_equity += value
+            in_positions += value
 
         drawdown = (total_equity - peak) / peak if peak > 0 else 0
         roi = (total_equity - initial) / initial * 100 if initial > 0 else 0
