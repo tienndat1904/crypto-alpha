@@ -864,8 +864,7 @@ def fetch_tickers():
         exchange = ccxt.binance({"enableRateLimit": True})
         tickers = exchange.fetch_tickers(WATCHED_COINS)
         return tickers
-    except Exception as e:
-        logger.warning(f"fetch_tickers error: {e}")
+    except Exception:
         return {}
 
 
