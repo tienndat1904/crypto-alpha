@@ -656,7 +656,10 @@ class RiskManager:
         drawdown = self._current_drawdown()
         total_equity = s["capital"]
         for pos in s["open_positions"].values():
-            total_equity += pos["size_usdt"]
+            if pos.get("leverage") and pos.get("margin"):
+                total_equity += pos["margin"]
+            else:
+                total_equity += pos["size_usdt"]
         win_rate = (s["total_wins"] / s["total_trades"] * 100) if s["total_trades"] > 0 else 0
 
         lines = [
