@@ -883,6 +883,30 @@ def fetch_ohlcv(symbol: str, timeframe: str = "1h", limit: int = 100):
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=300)
+def fetch_ohlcv_batch(symbols: tuple, timeframe: str = "1h", limit: int = 48) -> dict:
+    """Fetch OHLCV for many symbols in parallel. Returns {symbol: DataFrame}.
+    Cached as a single entry so a cold load fans out once instead of N times.
+    """
+    if ccxt is None:
+        return {symbol: pd.DataFrame() for symbol in symbols}
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _one(sym):
+        try:
+            ex = ccxt.binance({"enableRateLimit": True})
+            ohlcv = ex.fetch_ohlcv(sym, timeframe, limit=limit)
+            df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+            return sym, df
+        except Exception:
+            return sym, pd.DataFrame()
+
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        results = list(ex.map(_one, symbols))
+    return dict(results)
+
+
 # ═══════════════════════════════════════════════════════════════
 # HEADER + LANGUAGE SELECTOR
 # ═══════════════════════════════════════════════════════════════
@@ -1310,9 +1334,11 @@ with tab_market:
         </div>
         """, unsafe_allow_html=True)
         spark_cols = st.columns(4)
+        # Single parallel batch instead of 20 sequential fetches (~6s → ~0.5s cold).
+        spark_data = fetch_ohlcv_batch(tuple(WATCHED_COINS), "1h", limit=48)
         for idx, coin in enumerate(WATCHED_COINS):
             col = spark_cols[idx % 4]
-            spark_df = fetch_ohlcv(coin, "1h", limit=48)
+            spark_df = spark_data.get(coin, pd.DataFrame())
             if spark_df.empty:
                 continue
             with col:
