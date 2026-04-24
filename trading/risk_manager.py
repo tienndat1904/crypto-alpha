@@ -34,8 +34,20 @@ STATE_FILE = Path("trading/state.json")
 class RiskManager:
     """Manages risk for paper/live trading."""
 
+    # Soft-pause guards (less aggressive than the 5-loss / week pause kept below).
+    SHORT_PAUSE_LOSSES = 4          # 4 consecutive losses → short pause
+    SHORT_PAUSE_HOURS = 4
+    DAILY_LOSS_LIMIT_PCT = 0.03     # >3% daily loss → pause until UTC midnight
+    SYMBOL_BLACKLIST_LOSSES = 2     # 2 consecutive losses on same coin → blacklist
+    SYMBOL_BLACKLIST_HOURS = 4
+
     def __init__(self):
         self.state = self._load_state()
+        # Backfill new keys on existing state files
+        self.state.setdefault("daily_loss_date", None)
+        self.state.setdefault("daily_loss_pnl", 0.0)
+        self.state.setdefault("symbol_consec_losses", {})
+        self.state.setdefault("symbol_blacklist", {})
         self.correlation_filter = CorrelationFilter()
         logger.info(
             f"RiskManager loaded. Capital: ${self.state['capital']:.2f}, "
@@ -54,6 +66,10 @@ class RiskManager:
             "total_wins": 0,
             "total_pnl": 0.0,
             "paused_until": None,
+            "daily_loss_date": None,
+            "daily_loss_pnl": 0.0,
+            "symbol_consec_losses": {},
+            "symbol_blacklist": {},
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -83,12 +99,17 @@ class RiskManager:
 
         Returns (allowed: bool, reason: str)
         """
+        now = datetime.now(timezone.utc)
+
         # Check pause
         if self.state["paused_until"]:
             pause_end = datetime.fromisoformat(self.state["paused_until"])
-            if datetime.now(timezone.utc) < pause_end:
-                remaining = (pause_end - datetime.now(timezone.utc)).days
-                return False, f"Trading paused. Resumes in {remaining} days"
+            if now < pause_end:
+                remaining = pause_end - now
+                hours = remaining.total_seconds() / 3600
+                if hours < 24:
+                    return False, f"Trading paused. Resumes in {hours:.1f}h"
+                return False, f"Trading paused. Resumes in {remaining.days}d"
             else:
                 self.state["paused_until"] = None
                 self.state["consecutive_losses"] = 0
@@ -102,16 +123,53 @@ class RiskManager:
                 f"max {MAX_DRAWDOWN:.0%}. Stop trading, review system."
             )
 
+        # Daily loss limit (resets at UTC midnight)
+        today_iso = now.date().isoformat()
+        if self.state.get("daily_loss_date") != today_iso:
+            self.state["daily_loss_date"] = today_iso
+            self.state["daily_loss_pnl"] = 0.0
+            self._save_state()
+        daily_loss = self.state.get("daily_loss_pnl", 0.0)
+        capital = self.state["capital"]
+        if capital > 0 and daily_loss < -self.DAILY_LOSS_LIMIT_PCT * capital:
+            return False, (
+                f"Daily loss limit hit (${daily_loss:.2f}, "
+                f"{daily_loss/capital:.1%}). Pausing until UTC midnight."
+            )
+
         # Max positions
         if len(self.state["open_positions"]) >= MAX_POSITIONS:
             return False, f"Max positions reached ({MAX_POSITIONS})"
 
-        # 5 consecutive losses → pause 1 week
+        # Soft pause: 4 consecutive losses → 4h pause
+        if self.SHORT_PAUSE_LOSSES <= self.state["consecutive_losses"] < 5:
+            pause_until = now + timedelta(hours=self.SHORT_PAUSE_HOURS)
+            self.state["paused_until"] = pause_until.isoformat()
+            self._save_state()
+            return False, (
+                f"{self.state['consecutive_losses']} consecutive losses. "
+                f"Soft pause {self.SHORT_PAUSE_HOURS}h."
+            )
+
+        # 5 consecutive losses → pause 1 week (existing hard rule)
         if self.state["consecutive_losses"] >= 5:
-            pause_until = datetime.now(timezone.utc) + timedelta(days=7)
+            pause_until = now + timedelta(days=7)
             self.state["paused_until"] = pause_until.isoformat()
             self._save_state()
             return False, "5 consecutive losses. Pausing for 1 week."
+
+        # Symbol blacklist (per-coin cooldown after 2 consecutive losses on it)
+        if symbol:
+            bl_until = self.state.get("symbol_blacklist", {}).get(symbol)
+            if bl_until:
+                bl_end = datetime.fromisoformat(bl_until)
+                if now < bl_end:
+                    remaining_h = (bl_end - now).total_seconds() / 3600
+                    return False, f"{symbol} blacklisted ({remaining_h:.1f}h left, 2 losses)"
+                else:
+                    self.state["symbol_blacklist"].pop(symbol, None)
+                    self.state.get("symbol_consec_losses", {}).pop(symbol, None)
+                    self._save_state()
 
         # Correlation filter: block if too correlated with open positions
         if symbol and self.state["open_positions"]:
@@ -477,8 +535,25 @@ class RiskManager:
         if pnl_usd > 0:
             self.state["total_wins"] += 1
             self.state["consecutive_losses"] = 0
+            self.state.setdefault("symbol_consec_losses", {})[symbol] = 0
         else:
             self.state["consecutive_losses"] += 1
+            sym_losses = self.state.setdefault("symbol_consec_losses", {})
+            sym_losses[symbol] = sym_losses.get(symbol, 0) + 1
+            if sym_losses[symbol] >= self.SYMBOL_BLACKLIST_LOSSES:
+                bl_until = datetime.now(timezone.utc) + timedelta(hours=self.SYMBOL_BLACKLIST_HOURS)
+                self.state.setdefault("symbol_blacklist", {})[symbol] = bl_until.isoformat()
+                logger.warning(
+                    f"⛔ {symbol} blacklisted {self.SYMBOL_BLACKLIST_HOURS}h "
+                    f"({sym_losses[symbol]} consecutive losses)"
+                )
+
+        # Daily loss accumulator (resets at UTC midnight via can_trade)
+        today_iso = datetime.now(timezone.utc).date().isoformat()
+        if self.state.get("daily_loss_date") != today_iso:
+            self.state["daily_loss_date"] = today_iso
+            self.state["daily_loss_pnl"] = 0.0
+        self.state["daily_loss_pnl"] = round(self.state.get("daily_loss_pnl", 0.0) + pnl_usd, 4)
 
         # Record trade
         closed_at = datetime.now(timezone.utc)

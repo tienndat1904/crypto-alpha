@@ -561,6 +561,20 @@ LANG = {
         "signals_neutral_expander": "coin trung lập — đang quan sát, chờ điều kiện",
         "refresh_data": "Làm mới dữ liệu",
         "load_error": "Lỗi tải dữ liệu — bấm làm mới để thử lại",
+        "perf_breakdown_title": "Phân tích chi tiết",
+        "by_hour_vn": "PnL theo giờ (giờ VN)",
+        "by_dayofweek": "PnL theo ngày trong tuần",
+        "by_regime": "PnL theo regime thị trường",
+        "daily_pnl_calendar": "Lịch PnL theo ngày",
+        "drawdown_curve": "Đường cong drawdown",
+        "best_hour": "Giờ thắng nhiều nhất",
+        "worst_hour": "Giờ thua nhiều nhất",
+        "best_day": "Ngày tốt nhất",
+        "worst_day": "Ngày xấu nhất",
+        "guard_status": "Trạng thái phòng vệ",
+        "daily_loss_so_far": "Lỗ trong ngày (UTC)",
+        "blacklisted_coins": "Coin tạm cấm",
+        "no_blacklist": "Không có coin nào bị cấm",
         "market_watch": "Giá thị trường",
         "overview_24h": "Tổng quan 24h",
         "candlestick_chart": "Biểu đồ nến",
@@ -700,6 +714,20 @@ LANG = {
         "signals_neutral_expander": "neutral coins — being watched, waiting for conditions",
         "refresh_data": "Refresh data",
         "load_error": "Failed to load data — click refresh to retry",
+        "perf_breakdown_title": "Detailed breakdown",
+        "by_hour_vn": "PnL by hour (VN time)",
+        "by_dayofweek": "PnL by day of week",
+        "by_regime": "PnL by market regime",
+        "daily_pnl_calendar": "Daily PnL calendar",
+        "drawdown_curve": "Drawdown curve",
+        "best_hour": "Best hour",
+        "worst_hour": "Worst hour",
+        "best_day": "Best day",
+        "worst_day": "Worst day",
+        "guard_status": "Guard status",
+        "daily_loss_so_far": "Daily loss (UTC)",
+        "blacklisted_coins": "Blacklisted coins",
+        "no_blacklist": "No coins blacklisted",
         "market_watch": "Market Watch",
         "overview_24h": "24h Overview",
         "candlestick_chart": "Candlestick Chart",
@@ -1084,6 +1112,199 @@ def fetch_live_signals() -> list:
         return sg.generate_all()
     except Exception:
         return []
+
+
+def render_advanced_breakdowns(history: list, key_prefix: str = ""):
+    """Render performance breakdowns shared across spot/futures perf tabs.
+    Sections: by hour-of-day (VN), by weekday, by regime, daily PnL calendar,
+    drawdown curve.
+    """
+    if not history:
+        return
+    df = pd.DataFrame(history)
+    if "closed_at" not in df.columns or "pnl_usd" not in df.columns:
+        return
+    df["closed_at"] = pd.to_datetime(df["closed_at"], errors="coerce", utc=True)
+    df = df.dropna(subset=["closed_at"])
+    if df.empty:
+        return
+    df["closed_vn"] = df["closed_at"].dt.tz_convert(VN_TZ)
+    df["hour_vn"] = df["closed_vn"].dt.hour
+    df["weekday"] = df["closed_vn"].dt.day_name()
+    df["date_vn"] = df["closed_vn"].dt.date
+
+    st.markdown(f"#### 🔬 {t('perf_breakdown_title')}")
+
+    # ── Hour of day + weekday side by side ──
+    bcol1, bcol2 = st.columns(2)
+    with bcol1:
+        st.markdown(f"##### {t('by_hour_vn')}")
+        hour_pnl = df.groupby("hour_vn")["pnl_usd"].sum().reindex(range(24), fill_value=0)
+        colors = [BINANCE_GREEN if v >= 0 else BINANCE_RED for v in hour_pnl.values]
+        fig_h = go.Figure(go.Bar(x=hour_pnl.index, y=hour_pnl.values, marker_color=colors))
+        fig_h.update_layout(
+            height=260, margin=dict(l=0, r=0, t=10, b=0),
+            xaxis_title="Hour (VN)", yaxis_title="PnL ($)",
+            xaxis=dict(tickmode="linear", dtick=2),
+        )
+        apply_binance_theme(fig_h)
+        st.plotly_chart(fig_h, use_container_width=True, key=f"{key_prefix}_hour")
+        if hour_pnl.abs().sum() > 0:
+            best_h = hour_pnl.idxmax()
+            worst_h = hour_pnl.idxmin()
+            st.caption(f"🏆 {t('best_hour')}: **{best_h:02d}h** (${hour_pnl[best_h]:+.2f}) "
+                       f"· 💀 {t('worst_hour')}: **{worst_h:02d}h** (${hour_pnl[worst_h]:+.2f})")
+
+    with bcol2:
+        st.markdown(f"##### {t('by_dayofweek')}")
+        order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        labels = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"] if st.session_state.lang == "vi" \
+                 else ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        wd_pnl = df.groupby("weekday")["pnl_usd"].sum().reindex(order, fill_value=0)
+        colors = [BINANCE_GREEN if v >= 0 else BINANCE_RED for v in wd_pnl.values]
+        fig_w = go.Figure(go.Bar(x=labels, y=wd_pnl.values, marker_color=colors,
+                                 text=[f"${v:+.1f}" for v in wd_pnl.values],
+                                 textposition="outside",
+                                 textfont=dict(color="#EAECEF")))
+        fig_w.update_layout(
+            height=260, margin=dict(l=0, r=0, t=10, b=0),
+            yaxis_title="PnL ($)",
+        )
+        apply_binance_theme(fig_w)
+        st.plotly_chart(fig_w, use_container_width=True, key=f"{key_prefix}_wd")
+        if wd_pnl.abs().sum() > 0:
+            best_d = wd_pnl.idxmax()
+            worst_d = wd_pnl.idxmin()
+            best_l = labels[order.index(best_d)]
+            worst_l = labels[order.index(worst_d)]
+            st.caption(f"🏆 {t('best_day')}: **{best_l}** (${wd_pnl[best_d]:+.2f}) "
+                       f"· 💀 {t('worst_day')}: **{worst_l}** (${wd_pnl[worst_d]:+.2f})")
+
+    # ── Regime breakdown ──
+    if "regime" in df.columns and df["regime"].notna().any():
+        st.markdown(f"##### {t('by_regime')}")
+        rg_stats = df.groupby("regime").agg(
+            trades=("pnl_usd", "count"),
+            total_pnl=("pnl_usd", "sum"),
+            win_rate=("pnl_usd", lambda x: (x > 0).mean() * 100),
+            avg_pnl=("pnl_usd", "mean"),
+        ).round(2)
+        rg_stats.columns = [t("total_trades"), "Total PnL ($)", f"{t('win_rate')} (%)", "Avg PnL ($)"]
+        st.dataframe(rg_stats, use_container_width=True)
+
+    # ── Daily PnL calendar (last 60 days) ──
+    st.markdown(f"##### {t('daily_pnl_calendar')}")
+    daily = df.groupby("date_vn")["pnl_usd"].sum().sort_index()
+    if len(daily) > 0:
+        last_date = daily.index.max()
+        first_date = max(daily.index.min(), last_date - timedelta(days=60))
+        full_range = pd.date_range(first_date, last_date).date
+        daily = daily.reindex(full_range, fill_value=0)
+        rows = [list(daily.index[i:i + 7]) for i in range(0, len(daily), 7)]
+        for week in rows:
+            wcols = st.columns(7)
+            for i, day in enumerate(week):
+                pnl = daily.get(day, 0)
+                if pnl > 5: bg = "#0ECB81"
+                elif pnl > 0: bg = "rgba(14,203,129,0.4)"
+                elif pnl == 0: bg = "rgba(132,142,156,0.15)"
+                elif pnl > -5: bg = "rgba(246,70,93,0.4)"
+                else: bg = "#F6465D"
+                txt_color = "#FFF" if abs(pnl) > 5 else "#EAECEF"
+                wcols[i].markdown(
+                    f"""<div style="padding:6px;background:{bg};border-radius:4px;text-align:center;min-height:50px;">
+                    <div style="color:{txt_color};font-size:10px;">{day.strftime('%d/%m')}</div>
+                    <div style="color:{txt_color};font-size:11px;font-weight:600;">${pnl:+.1f}</div>
+                    </div>""", unsafe_allow_html=True,
+                )
+
+    # ── Drawdown curve (running) ──
+    st.markdown(f"##### {t('drawdown_curve')}")
+    df_sorted = df.sort_values("closed_at").reset_index(drop=True)
+    df_sorted["cum_pnl"] = df_sorted["pnl_usd"].cumsum()
+    df_sorted["peak"] = df_sorted["cum_pnl"].cummax()
+    df_sorted["dd"] = df_sorted["cum_pnl"] - df_sorted["peak"]
+    fig_dd = go.Figure(go.Scatter(
+        x=df_sorted["closed_at"], y=df_sorted["dd"],
+        fill="tozeroy", mode="lines",
+        line=dict(color="#F6465D", width=1),
+        fillcolor="rgba(246,70,93,0.3)",
+    ))
+    fig_dd.update_layout(
+        height=240, margin=dict(l=0, r=0, t=10, b=0),
+        yaxis_title="Drawdown ($)", xaxis_title=None,
+    )
+    apply_binance_theme(fig_dd)
+    st.plotly_chart(fig_dd, use_container_width=True, key=f"{key_prefix}_dd")
+
+
+def render_guard_status(state: dict):
+    """Show active safety guards (daily loss, blacklisted coins, pause status)."""
+    if not state:
+        return
+    st.markdown(f"##### 🛡️ {t('guard_status')}")
+    gc1, gc2, gc3 = st.columns(3)
+
+    daily_loss = state.get("daily_loss_pnl", 0.0)
+    capital = state.get("capital", 1)
+    pct = (daily_loss / capital * 100) if capital else 0
+    color = BINANCE_RED if daily_loss < 0 else BINANCE_GREEN
+    gc1.markdown(
+        f"""<div style="padding:10px;background:#1E2329;border-radius:6px;">
+        <div style="color:#848E9C;font-size:11px;">{t('daily_loss_so_far')}</div>
+        <div style="color:{color};font-size:18px;font-weight:700;">${daily_loss:+.2f}</div>
+        <div style="color:#848E9C;font-size:11px;">{pct:+.2f}% (limit -3%)</div>
+        </div>""", unsafe_allow_html=True,
+    )
+
+    streak = state.get("consecutive_losses", 0)
+    streak_color = BINANCE_RED if streak >= 3 else (BINANCE_YELLOW if streak >= 2 else "#848E9C")
+    gc2.markdown(
+        f"""<div style="padding:10px;background:#1E2329;border-radius:6px;">
+        <div style="color:#848E9C;font-size:11px;">{t('consec_losses')}</div>
+        <div style="color:{streak_color};font-size:18px;font-weight:700;">{streak}</div>
+        <div style="color:#848E9C;font-size:11px;">soft pause @ 4 · hard @ 5</div>
+        </div>""", unsafe_allow_html=True,
+    )
+
+    paused_until = state.get("paused_until")
+    if paused_until:
+        try:
+            pu = datetime.fromisoformat(paused_until)
+            now = datetime.now(timezone.utc)
+            if pu > now:
+                remaining = pu - now
+                hrs = remaining.total_seconds() / 3600
+                gc3.markdown(
+                    f"""<div style="padding:10px;background:#3D1414;border-radius:6px;">
+                    <div style="color:#848E9C;font-size:11px;">⏸️ Paused</div>
+                    <div style="color:#F6465D;font-size:18px;font-weight:700;">{hrs:.1f}h</div>
+                    <div style="color:#848E9C;font-size:11px;">until {pu.astimezone(VN_TZ).strftime('%d/%m %H:%M')}</div>
+                    </div>""", unsafe_allow_html=True,
+                )
+            else:
+                gc3.success("Active")
+        except Exception:
+            gc3.success("Active")
+    else:
+        gc3.success("Active")
+
+    # Blacklist
+    bl = state.get("symbol_blacklist", {})
+    now = datetime.now(timezone.utc)
+    active_bl = []
+    for sym, until in bl.items():
+        try:
+            until_ts = datetime.fromisoformat(until)
+            if until_ts > now:
+                hrs = (until_ts - now).total_seconds() / 3600
+                active_bl.append(f"**{sym}** ({hrs:.1f}h)")
+        except Exception:
+            pass
+    if active_bl:
+        st.warning(f"⛔ {t('blacklisted_coins')}: {' · '.join(active_bl)}")
+    else:
+        st.caption(f"✅ {t('no_blacklist')}")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -3304,8 +3525,14 @@ with tab_performance:
                         st.dataframe(display_df, use_container_width=True, hide_index=True)
                 else:
                     st.info(t("no_signal_log"))
+
+            st.divider()
+            render_advanced_breakdowns(history, key_prefix="spot_perf")
+            st.divider()
+            render_guard_status(state)
         else:
             st.info(t("no_trades"))
+            render_guard_status(state)
 
     # ─── FUTURES PERFORMANCE ──────────────────────────────────
     with perf_futures_tab:
@@ -3471,8 +3698,14 @@ with tab_performance:
                     st.dataframe(display_f_df, use_container_width=True, hide_index=True)
                 else:
                     st.dataframe(f_pnl_data, use_container_width=True, hide_index=True)
+
+                st.divider()
+                render_advanced_breakdowns(f_history, key_prefix="fut_perf")
+                st.divider()
+                render_guard_status(futures_state)
             else:
                 st.info(t("no_trades"))
+                render_guard_status(futures_state)
         else:
             st.info(t("no_futures_data"))
 
