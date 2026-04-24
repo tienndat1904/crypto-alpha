@@ -56,6 +56,37 @@ def append_close(mode: str, symbol: str, pct: float) -> str:
     return action["id"]
 
 
+def append_pause(mode: str, hours: float) -> str:
+    """Queue a pause action. Bot will set state['paused_until'] for `hours`."""
+    action = {
+        "id": uuid.uuid4().hex[:12],
+        "type": "pause",
+        "mode": mode,
+        "hours": float(hours),
+        "ts": time.time(),
+        "status": "pending",
+    }
+    actions = _read_all()
+    actions.append(action)
+    _atomic_write(actions)
+    return action["id"]
+
+
+def append_resume(mode: str) -> str:
+    """Queue a resume action. Bot will clear state['paused_until']."""
+    action = {
+        "id": uuid.uuid4().hex[:12],
+        "type": "resume",
+        "mode": mode,
+        "ts": time.time(),
+        "status": "pending",
+    }
+    actions = _read_all()
+    actions.append(action)
+    _atomic_write(actions)
+    return action["id"]
+
+
 def pending_for(mode: str, symbol: str = None) -> list:
     """Return pending actions matching mode (and optionally symbol)."""
     out = []

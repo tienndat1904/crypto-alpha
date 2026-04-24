@@ -126,7 +126,27 @@ class PaperTrader:
         """Drain user-initiated actions from the dashboard queue."""
         actions = manual_actions.consume("spot")
         for a in actions:
-            if a.get("type") != "close":
+            atype = a.get("type")
+
+            if atype == "pause":
+                from datetime import timedelta
+                hours = float(a.get("hours", 4))
+                until = datetime.now(timezone.utc) + timedelta(hours=hours)
+                self.risk_mgr.state["paused_until"] = until.isoformat()
+                self.risk_mgr._save_state()
+                logger.info(f"Manual pause: spot paused for {hours}h")
+                self.tg.send(f"⏸️ <b>·[spot] PAUSED</b> {hours}h từ dashboard")
+                continue
+
+            if atype == "resume":
+                self.risk_mgr.state["paused_until"] = None
+                self.risk_mgr.state["consecutive_losses"] = 0
+                self.risk_mgr._save_state()
+                logger.info("Manual resume: spot resumed")
+                self.tg.send("▶️ <b>·[spot] RESUMED</b> từ dashboard")
+                continue
+
+            if atype != "close":
                 continue
             symbol = a["symbol"]
             pct = float(a.get("pct", 1.0))

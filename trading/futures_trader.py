@@ -26,7 +26,7 @@ import sys
 sys.path.insert(0, ".")
 
 import ccxt
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from loguru import logger
 
@@ -423,7 +423,26 @@ class FuturesPaperTrader:
         """Drain user-initiated actions from the dashboard queue."""
         actions = manual_actions.consume("futures")
         for a in actions:
-            if a.get("type") != "close":
+            atype = a.get("type")
+
+            if atype == "pause":
+                hours = float(a.get("hours", 4))
+                until = datetime.now(timezone.utc) + timedelta(hours=hours)
+                self.risk_mgr.state["paused_until"] = until.isoformat()
+                self.risk_mgr._save_state()
+                logger.info(f"Manual pause: futures paused for {hours}h")
+                self.tg.send(f"⏸️ <b>🔥[FUT] PAUSED</b> {hours}h từ dashboard")
+                continue
+
+            if atype == "resume":
+                self.risk_mgr.state["paused_until"] = None
+                self.risk_mgr.state["consecutive_losses"] = 0
+                self.risk_mgr._save_state()
+                logger.info("Manual resume: futures resumed")
+                self.tg.send("▶️ <b>🔥[FUT] RESUMED</b> từ dashboard")
+                continue
+
+            if atype != "close":
                 continue
             symbol = a["symbol"]
             pct = float(a.get("pct", 1.0))

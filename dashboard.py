@@ -575,6 +575,24 @@ LANG = {
         "daily_loss_so_far": "Lỗ trong ngày (UTC)",
         "blacklisted_coins": "Coin tạm cấm",
         "no_blacklist": "Không có coin nào bị cấm",
+        "today_at_glance": "Hôm nay",
+        "today_trades": "Lệnh hôm nay",
+        "today_pnl": "PnL hôm nay",
+        "today_no_trades": "Chưa có lệnh nào hôm nay",
+        "control_panel": "Bảng điều khiển",
+        "bot_status": "Trạng thái bot",
+        "status_active": "Hoạt động",
+        "status_paused": "Tạm dừng",
+        "status_killed": "Kill switch",
+        "pause_for": "Tạm dừng trong",
+        "pause_btn": "⏸️ Tạm dừng",
+        "resume_btn": "▶️ Hoạt động lại",
+        "pause_queued": "Đã queue lệnh tạm dừng (≤30s)",
+        "resume_queued": "Đã queue lệnh resume (≤30s)",
+        "to_tp1": "đến TP1",
+        "to_tp2": "đến TP2",
+        "to_stop": "đến SL",
+        "held_for": "Thời gian giữ",
         "market_watch": "Giá thị trường",
         "overview_24h": "Tổng quan 24h",
         "candlestick_chart": "Biểu đồ nến",
@@ -728,6 +746,24 @@ LANG = {
         "daily_loss_so_far": "Daily loss (UTC)",
         "blacklisted_coins": "Blacklisted coins",
         "no_blacklist": "No coins blacklisted",
+        "today_at_glance": "Today",
+        "today_trades": "Today's trades",
+        "today_pnl": "Today's PnL",
+        "today_no_trades": "No trades today yet",
+        "control_panel": "Control panel",
+        "bot_status": "Bot status",
+        "status_active": "Active",
+        "status_paused": "Paused",
+        "status_killed": "Kill switch",
+        "pause_for": "Pause for",
+        "pause_btn": "⏸️ Pause",
+        "resume_btn": "▶️ Resume",
+        "pause_queued": "Pause action queued (≤30s)",
+        "resume_queued": "Resume action queued (≤30s)",
+        "to_tp1": "to TP1",
+        "to_tp2": "to TP2",
+        "to_stop": "to SL",
+        "held_for": "Held for",
         "market_watch": "Market Watch",
         "overview_24h": "24h Overview",
         "candlestick_chart": "Candlestick Chart",
@@ -1238,6 +1274,239 @@ def render_advanced_breakdowns(history: list, key_prefix: str = ""):
     st.plotly_chart(fig_dd, use_container_width=True, key=f"{key_prefix}_dd")
 
 
+def render_today_summary(spot_state: dict, fut_state: dict):
+    """Hero 'Today at a Glance' card. Shows today's trade count, PnL split by
+    spot/futures, win/loss, and any active warnings (pause, blacklist, kill).
+    """
+    today_utc = datetime.now(timezone.utc).date()
+
+    def _today_trades(state):
+        if not state:
+            return [], 0.0, 0, 0
+        hist = state.get("trade_history", [])
+        today_trades = []
+        for t_ in hist:
+            ca = t_.get("closed_at")
+            if not ca:
+                continue
+            try:
+                d = datetime.fromisoformat(ca).date()
+            except Exception:
+                continue
+            if d == today_utc:
+                today_trades.append(t_)
+        pnl = sum(t_.get("pnl_usd", 0) for t_ in today_trades)
+        wins = sum(1 for t_ in today_trades if t_.get("pnl_usd", 0) > 0)
+        losses = sum(1 for t_ in today_trades if t_.get("pnl_usd", 0) <= 0)
+        return today_trades, pnl, wins, losses
+
+    spot_trades, spot_pnl, spot_w, spot_l = _today_trades(spot_state)
+    fut_trades, fut_pnl, fut_w, fut_l = _today_trades(fut_state)
+    total_trades = len(spot_trades) + len(fut_trades)
+    total_pnl = spot_pnl + fut_pnl
+    total_w = spot_w + fut_w
+    total_l = spot_l + fut_l
+
+    # Warnings
+    warnings = []
+    for label, state in [("Spot", spot_state), ("Futures", fut_state)]:
+        if not state:
+            continue
+        pu = state.get("paused_until")
+        if pu:
+            try:
+                pu_dt = datetime.fromisoformat(pu)
+                if pu_dt > datetime.now(timezone.utc):
+                    hrs = (pu_dt - datetime.now(timezone.utc)).total_seconds() / 3600
+                    warnings.append(f"⏸️ <b>{label}</b> paused ({hrs:.1f}h left)")
+            except Exception:
+                pass
+        bl = state.get("symbol_blacklist", {})
+        active_bl = []
+        for sym, until in bl.items():
+            try:
+                until_ts = datetime.fromisoformat(until)
+                if until_ts > datetime.now(timezone.utc):
+                    active_bl.append(sym)
+            except Exception:
+                pass
+        if active_bl:
+            warnings.append(f"⛔ <b>{label}</b> blacklist: {', '.join(active_bl)}")
+
+    pnl_color = BINANCE_GREEN if total_pnl >= 0 else BINANCE_RED
+    pnl_sign = "+" if total_pnl >= 0 else ""
+
+    if total_trades == 0:
+        body = f"""<div style="color:#848E9C;font-size:13px;padding:12px 0;">
+        {t('today_no_trades')}
+        </div>"""
+    else:
+        breakdown_parts = []
+        if len(spot_trades):
+            sc = BINANCE_GREEN if spot_pnl >= 0 else BINANCE_RED
+            breakdown_parts.append(
+                f'·[spot] {len(spot_trades)} <span style="color:{sc};">{spot_pnl:+.2f}$</span>'
+            )
+        if len(fut_trades):
+            fc = BINANCE_GREEN if fut_pnl >= 0 else BINANCE_RED
+            breakdown_parts.append(
+                f'🔥[fut] {len(fut_trades)} <span style="color:{fc};">{fut_pnl:+.2f}$</span>'
+            )
+        breakdown = " · ".join(breakdown_parts)
+        body = f"""<div style="display:flex;gap:30px;align-items:center;padding:8px 0;flex-wrap:wrap;">
+            <div>
+                <div style="color:#848E9C;font-size:11px;">{t('today_pnl')}</div>
+                <div style="color:{pnl_color};font-size:28px;font-weight:700;">{pnl_sign}${total_pnl:.2f}</div>
+            </div>
+            <div>
+                <div style="color:#848E9C;font-size:11px;">{t('today_trades')}</div>
+                <div style="color:#EAECEF;font-size:28px;font-weight:700;">{total_trades}</div>
+                <div style="color:#848E9C;font-size:11px;">
+                    <span style="color:{BINANCE_GREEN};">{total_w}W</span> /
+                    <span style="color:{BINANCE_RED};">{total_l}L</span>
+                </div>
+            </div>
+            <div style="border-left:1px solid #2B3139;padding-left:20px;color:#EAECEF;font-size:13px;">
+                {breakdown}
+            </div>
+        </div>"""
+
+    warn_html = ""
+    if warnings:
+        warn_html = f"""<div style="margin-top:8px;padding:8px 12px;background:rgba(246,70,93,0.1);
+        border-left:3px solid #F6465D;border-radius:4px;color:#EAECEF;font-size:12px;">
+        {' · '.join(warnings)}
+        </div>"""
+
+    st.markdown(f"""
+    <div style="background:#1E2329;border-radius:10px;padding:16px 20px;margin-bottom:16px;">
+        <div style="color:#848E9C;font-size:11px;letter-spacing:1px;text-transform:uppercase;">
+            📅 {t('today_at_glance')} · {datetime.now(VN_TZ).strftime('%a %d/%m')}
+        </div>
+        {body}
+        {warn_html}
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def render_position_progress_bar(entry: float, current: float, stop: float,
+                                 tp1: float, tp2: float, side: str) -> str:
+    """Build an HTML progress bar showing position location between SL→entry→TP1→TP2."""
+    if side == "long":
+        lo = min(stop, entry, current) * 0.998
+        hi = max(tp2, current, entry) * 1.002
+    else:
+        lo = min(tp2, current, entry) * 0.998
+        hi = max(stop, entry, current) * 1.002
+
+    span = hi - lo if hi > lo else 1
+    def _pos_pct(p): return max(0, min(100, (p - lo) / span * 100))
+
+    entry_pct = _pos_pct(entry)
+    cur_pct = _pos_pct(current)
+    tp1_pct = _pos_pct(tp1)
+    tp2_pct = _pos_pct(tp2)
+    sl_pct = _pos_pct(stop)
+
+    # Profit zone color depends on side and current vs entry
+    in_profit = (current > entry) if side == "long" else (current < entry)
+    cur_color = BINANCE_GREEN if in_profit else BINANCE_RED
+
+    return f"""
+    <div style="position:relative;height:32px;background:linear-gradient(to right,
+        rgba(246,70,93,0.15) 0%, rgba(246,70,93,0.15) {entry_pct}%,
+        rgba(14,203,129,0.15) {entry_pct}%, rgba(14,203,129,0.15) 100%);
+        border-radius:4px;margin:6px 0;">
+        <div style="position:absolute;left:{sl_pct}%;top:0;height:100%;width:2px;background:#F6465D;"></div>
+        <div style="position:absolute;left:{entry_pct}%;top:0;height:100%;width:2px;background:#848E9C;"></div>
+        <div style="position:absolute;left:{tp1_pct}%;top:0;height:100%;width:2px;background:#FCD535;"></div>
+        <div style="position:absolute;left:{tp2_pct}%;top:0;height:100%;width:2px;background:#0ECB81;"></div>
+        <div style="position:absolute;left:calc({cur_pct}% - 6px);top:6px;width:12px;height:20px;
+            background:{cur_color};border-radius:3px;border:2px solid #0B0E11;
+            box-shadow:0 0 0 1px {cur_color};"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:10px;color:#848E9C;
+        margin-top:-2px;margin-bottom:6px;">
+        <span style="color:#F6465D;">SL ${stop:,.4f}</span>
+        <span>Entry ${entry:,.4f}</span>
+        <span style="color:#FCD535;">TP1 ${tp1:,.4f}</span>
+        <span style="color:#0ECB81;">TP2 ${tp2:,.4f}</span>
+    </div>
+    """
+
+
+def render_sidebar(spot_state: dict, fut_state: dict):
+    """Persistent left-side control panel: bot status, pause toggle, refresh."""
+    with st.sidebar:
+        st.markdown(f"### 🎛️ {t('control_panel')}")
+
+        # ── Status indicators ──
+        for mode_label, state, mode_key in [("·[spot]", spot_state, "spot"),
+                                            ("🔥[fut]", fut_state, "futures")]:
+            if not state:
+                st.caption(f"{mode_label} (no state)")
+                continue
+            status_emoji = "🟢"
+            status_label = t("status_active")
+            status_color = "#0ECB81"
+            pu = state.get("paused_until")
+            if pu:
+                try:
+                    pu_dt = datetime.fromisoformat(pu)
+                    now = datetime.now(timezone.utc)
+                    if pu_dt > now:
+                        hrs = (pu_dt - now).total_seconds() / 3600
+                        status_emoji = "⏸️"
+                        status_label = f"{t('status_paused')} ({hrs:.1f}h)"
+                        status_color = "#FCD535"
+                except Exception:
+                    pass
+
+            cap = state.get("capital", 0)
+            peak = state.get("peak_capital", cap or 1)
+            dd = (cap - peak) / peak if peak > 0 else 0
+            from config.settings import MAX_DRAWDOWN as _MDD
+            if dd < -_MDD:
+                status_emoji = "🔴"
+                status_label = t("status_killed")
+                status_color = "#F6465D"
+
+            st.markdown(
+                f"""<div style="padding:8px 10px;background:#1E2329;border-radius:6px;margin-bottom:6px;">
+                <div style="font-size:11px;color:#848E9C;">{mode_label}</div>
+                <div style="font-size:14px;color:{status_color};font-weight:700;">{status_emoji} {status_label}</div>
+                </div>""", unsafe_allow_html=True,
+            )
+
+            paused_now = pu and datetime.fromisoformat(pu) > datetime.now(timezone.utc)
+            if paused_now:
+                if st.button(t("resume_btn"), key=f"sb_resume_{mode_key}", use_container_width=True):
+                    manual_actions.append_resume(mode_key)
+                    st.success(t("resume_queued"))
+                    st.rerun()
+            else:
+                pcol1, pcol2 = st.columns([2, 1])
+                hours = pcol1.selectbox(
+                    "Pause hours", [1, 4, 8, 24], index=1,
+                    key=f"sb_pause_h_{mode_key}", label_visibility="collapsed",
+                )
+                if pcol2.button("⏸️", key=f"sb_pause_{mode_key}", use_container_width=True,
+                                help=f"{t('pause_for')} {hours}h"):
+                    manual_actions.append_pause(mode_key, hours)
+                    st.success(t("pause_queued"))
+                    st.rerun()
+            st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+
+        st.divider()
+        if st.button("🔄 " + t("refresh_data"), use_container_width=True, key="sb_refresh_all"):
+            st.cache_data.clear()
+            st.rerun()
+
+        st.divider()
+        st.caption(f"⏰ {datetime.now(VN_TZ).strftime('%H:%M (VN)')}")
+        st.caption(f"📊 Auto-refresh: 15min")
+
+
 def render_guard_status(state: dict):
     """Show active safety guards (daily loss, blacklisted coins, pause status)."""
     if not state:
@@ -1517,10 +1786,18 @@ tab_market, tab_analysis, tab_signals, tab_trading, tab_backtest, tab_performanc
 ])
 
 # ═══════════════════════════════════════════════════════════════
+# SIDEBAR (control panel) — rendered before any tab content
+# ═══════════════════════════════════════════════════════════════
+render_sidebar(_spot_state, _fut_state)
+
+
+# ═══════════════════════════════════════════════════════════════
 # MARKET TAB
 # ═══════════════════════════════════════════════════════════════
 
 with tab_market:
+    render_today_summary(_spot_state, _fut_state)
+
     st.markdown(f"""
     <div class="section-header">
         <div class="section-icon" style="background:rgba(252,213,53,0.1);">
@@ -2123,15 +2400,50 @@ with tab_trading:
                         price_html = '<span class="pos-value" style="color:#848E9C;">--</span>'
                         pnl_html = '<span class="pos-value" style="color:#848E9C;">--</span>'
 
+                    # Build progress bar if we have all the prices we need
+                    progress_html = ""
+                    distance_html = ""
+                    if cur_price and pos.get("tp1_price") and pos.get("tp2_price") and stop_p:
+                        progress_html = render_position_progress_bar(
+                            entry=entry_p, current=cur_price,
+                            stop=stop_p, tp1=pos["tp1_price"], tp2=pos["tp2_price"],
+                            side=side,
+                        )
+                        # Distance to SL/TP in R units
+                        risk_per_r = abs(entry_p - stop_p)
+                        if risk_per_r > 0:
+                            if side == "long":
+                                d_sl = (cur_price - stop_p) / risk_per_r
+                                d_tp1 = (pos["tp1_price"] - cur_price) / risk_per_r
+                                d_tp2 = (pos["tp2_price"] - cur_price) / risk_per_r
+                            else:
+                                d_sl = (stop_p - cur_price) / risk_per_r
+                                d_tp1 = (cur_price - pos["tp1_price"]) / risk_per_r
+                                d_tp2 = (cur_price - pos["tp2_price"]) / risk_per_r
+                            distance_html = f"""
+                            <div style="display:flex;justify-content:space-between;font-size:11px;
+                                color:#848E9C;padding:4px 0;">
+                                <span>📍 {abs(d_sl):.2f}R {t('to_stop')}</span>
+                                <span>🎯 {abs(d_tp1):.2f}R {t('to_tp1')}</span>
+                                <span>🏁 {abs(d_tp2):.2f}R {t('to_tp2')}</span>
+                            </div>
+                            """
+
+                    # Time held
+                    held_html = ""
+                    if pos.get("opened_at"):
+                        try:
+                            opened_dt = datetime.fromisoformat(pos["opened_at"])
+                            held_h = (datetime.now(timezone.utc) - opened_dt).total_seconds() / 3600
+                            held_html = f"<span style='color:#848E9C;font-size:11px;'>⏱️ {t('held_for')} {held_h:.1f}h</span>"
+                        except Exception:
+                            pass
+
                     st.markdown(f"""
                     <div class="pos-card">
                         <div class="pos-header">
                             <span class="pos-symbol">{sym}</span>
                             <span class="pos-side {side_cls}">{side_label}</span>
-                        </div>
-                        <div class="pos-detail">
-                            <span class="pos-label">{t("entry")}</span>
-                            <span class="pos-value">${entry_p:,.4f}</span>
                         </div>
                         <div class="pos-detail">
                             <span class="pos-label">{t("current_price")}</span>
@@ -2141,21 +2453,11 @@ with tab_trading:
                             <span class="pos-label">PnL</span>
                             {pnl_html}
                         </div>
-                        <div class="pos-detail">
-                            <span class="pos-label">{t("size")}</span>
-                            <span class="pos-value">{size_str}</span>
-                        </div>
-                        <div class="pos-detail">
-                            <span class="pos-label">{t("stop")}</span>
-                            <span class="pos-value" style="color:{BINANCE_RED};">${stop_p:,.4f}</span>
-                        </div>
-                        <div class="pos-detail">
-                            <span class="pos-label">TP1</span>
-                            <span class="pos-value" style="color:{BINANCE_GREEN};">{tp1_str}</span>
-                        </div>
-                        <div class="pos-detail">
-                            <span class="pos-label">{t("opened_at")}</span>
-                            <span class="pos-value" style="color:#848E9C;font-size:12px;">{opened}</span>
+                        {progress_html}
+                        {distance_html}
+                        <div style="display:flex;justify-content:space-between;font-size:11px;color:#848E9C;padding:6px 0 2px 0;border-top:1px solid #2B3139;margin-top:6px;">
+                            <span>{t("size")}: {size_str}</span>
+                            {held_html}
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
@@ -2655,6 +2957,40 @@ with tab_trading:
                     }
                     f_pos_rows.append(row)
                 st.dataframe(pd.DataFrame(f_pos_rows), use_container_width=True, hide_index=True)
+
+                # --- Progress bar per position (visual SL/entry/TP1/TP2 location) ---
+                for fsym, fpos in f_open_pos.items():
+                    f_cur = _fut_current_prices.get(fsym)
+                    if not (f_cur and fpos.get("tp1_price") and fpos.get("tp2_price") and fpos.get("stop_price")):
+                        continue
+                    f_entry = fpos.get("entry_price", 0)
+                    f_stop = fpos.get("stop_price", 0)
+                    risk_per_r = abs(f_entry - f_stop)
+                    if fpos["side"] == "long":
+                        d_sl = (f_cur - f_stop) / risk_per_r if risk_per_r else 0
+                        d_tp1 = (fpos["tp1_price"] - f_cur) / risk_per_r if risk_per_r else 0
+                        d_tp2 = (fpos["tp2_price"] - f_cur) / risk_per_r if risk_per_r else 0
+                    else:
+                        d_sl = (f_stop - f_cur) / risk_per_r if risk_per_r else 0
+                        d_tp1 = (f_cur - fpos["tp1_price"]) / risk_per_r if risk_per_r else 0
+                        d_tp2 = (f_cur - fpos["tp2_price"]) / risk_per_r if risk_per_r else 0
+                    st.markdown(f"**{fsym}** ({fpos['side'].upper()})", help="Vị trí giá hiện tại trên thanh SL → Entry → TP1 → TP2")
+                    st.markdown(
+                        render_position_progress_bar(
+                            entry=f_entry, current=f_cur, stop=f_stop,
+                            tp1=fpos["tp1_price"], tp2=fpos["tp2_price"],
+                            side=fpos["side"],
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        f"""<div style="display:flex;justify-content:space-between;font-size:11px;
+                        color:#848E9C;padding:0 0 8px 0;">
+                        <span>📍 {abs(d_sl):.2f}R {t('to_stop')}</span>
+                        <span>🎯 {abs(d_tp1):.2f}R {t('to_tp1')}</span>
+                        <span>🏁 {abs(d_tp2):.2f}R {t('to_tp2')}</span>
+                        </div>""", unsafe_allow_html=True,
+                    )
 
                 # --- Manual close controls (one row per futures position) ---
                 st.markdown("##### 🔥 Đóng vị thế thủ công (Futures)")
