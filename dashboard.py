@@ -526,6 +526,8 @@ LANG = {
         "title": "Crypto Alpha Trading System",
         "subtitle": "Bảng điều khiển giám sát thời gian thực",
         "tab_market": "Thị trường",
+        "tab_analysis": "Phân tích thị trường",
+        "tab_signals": "Tín hiệu",
         "tab_trading": "Giao dịch",
         "tab_backtest": "Phân tích Backtest",
         "tab_performance": "Hiệu suất",
@@ -633,6 +635,8 @@ LANG = {
         "title": "Crypto Alpha Trading System",
         "subtitle": "Real-time monitoring dashboard",
         "tab_market": "Market",
+        "tab_analysis": "Market Analysis",
+        "tab_signals": "Signals",
         "tab_trading": "Trading",
         "tab_backtest": "Backtest Analysis",
         "tab_performance": "Performance",
@@ -908,6 +912,125 @@ def fetch_ohlcv_batch(symbols: tuple, timeframe: str = "1h", limit: int = 48) ->
 
 
 # ═══════════════════════════════════════════════════════════════
+# MARKET ANALYSIS / SIGNALS FETCHERS
+# ═══════════════════════════════════════════════════════════════
+
+@st.cache_data(ttl=300)
+def fetch_top_movers(top_n: int = 10) -> dict:
+    """Top gainers & losers across all USDT spot pairs in the last 24h.
+    Returns {"gainers": [...], "losers": [...]} each a list of dicts.
+    """
+    if ccxt is None:
+        return {"gainers": [], "losers": []}
+    try:
+        ex = ccxt.binance({"enableRateLimit": True})
+        tickers = ex.fetch_tickers()
+    except Exception:
+        return {"gainers": [], "losers": []}
+
+    rows = []
+    for sym, tk in tickers.items():
+        if not sym.endswith("/USDT"):
+            continue
+        pct = tk.get("percentage")
+        last = tk.get("last")
+        quote_vol = tk.get("quoteVolume") or 0
+        if pct is None or last is None or quote_vol < 1_000_000:
+            continue  # drop illiquid pairs
+        rows.append({
+            "symbol": sym,
+            "last": last,
+            "pct_24h": pct,
+            "quote_vol": quote_vol,
+        })
+    rows.sort(key=lambda r: r["pct_24h"], reverse=True)
+    return {
+        "gainers": rows[:top_n],
+        "losers": list(reversed(rows[-top_n:])),
+    }
+
+
+@st.cache_data(ttl=300)
+def fetch_funding_rates_batch(symbols: tuple) -> dict:
+    """Fetch funding rate for a list of symbols via the strategies helper.
+    Returns {symbol: {rate, avg_24h, trend}} or {} per failure.
+    """
+    try:
+        from strategies.funding_rate import FundingRateStrategy
+    except Exception:
+        return {}
+    from concurrent.futures import ThreadPoolExecutor
+
+    fr = FundingRateStrategy()
+
+    def _one(sym):
+        try:
+            return sym, fr.fetch_funding_rate(sym)
+        except Exception:
+            return sym, {}
+
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        results = list(ex.map(_one, symbols))
+    return dict(results)
+
+
+@st.cache_data(ttl=3600)
+def fetch_fear_greed() -> dict:
+    """Fear & Greed index (alternative.me). Returns {value, classification} or {}."""
+    try:
+        import requests
+        r = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
+        data = r.json().get("data", [])
+        if not data:
+            return {}
+        return {
+            "value": int(data[0]["value"]),
+            "classification": data[0]["value_classification"],
+        }
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=900)
+def fetch_btc_dominance() -> dict:
+    """BTC dominance via CoinGecko global. Returns {btc_dom, total_mcap_usd, mcap_change_24h} or {}."""
+    try:
+        import requests
+        r = requests.get("https://api.coingecko.com/api/v3/global", timeout=10)
+        d = r.json().get("data", {})
+        if not d:
+            return {}
+        return {
+            "btc_dom": d.get("market_cap_percentage", {}).get("btc", 0),
+            "total_mcap_usd": d.get("total_market_cap", {}).get("usd", 0),
+            "mcap_change_24h": d.get("market_cap_change_percentage_24h_usd", 0),
+        }
+    except Exception:
+        return {}
+
+
+@st.cache_resource
+def _get_signal_generator():
+    """SignalGenerator is expensive to construct (loads ML model, strategies).
+    Cache as resource so it's built once per Streamlit session.
+    """
+    from trading.signal_generator import SignalGenerator
+    return SignalGenerator()
+
+
+@st.cache_data(ttl=300)
+def fetch_live_signals() -> list:
+    """Run the bot's own SignalGenerator across all configured coins.
+    Returns a list of signal dicts (same shape as signal_generator outputs).
+    """
+    try:
+        sg = _get_signal_generator()
+        return sg.generate_all()
+    except Exception:
+        return []
+
+
+# ═══════════════════════════════════════════════════════════════
 # HEADER + LANGUAGE SELECTOR
 # ═══════════════════════════════════════════════════════════════
 
@@ -1107,8 +1230,10 @@ with _hero_col1:
 # TOP-LEVEL TABS
 # ═══════════════════════════════════════════════════════════════
 
-tab_market, tab_trading, tab_backtest, tab_performance = st.tabs([
+tab_market, tab_analysis, tab_signals, tab_trading, tab_backtest, tab_performance = st.tabs([
     t("tab_market"),
+    t("tab_analysis"),
+    t("tab_signals"),
     t("tab_trading"),
     t("tab_backtest"),
     t("tab_performance"),
@@ -1364,6 +1489,244 @@ with tab_market:
                 st.plotly_chart(fig_spark, use_container_width=True, key=f"spark_{coin}")
     else:
         st.info(t("no_data") + " (ccxt not available or API error)")
+
+
+# ═══════════════════════════════════════════════════════════════
+# MARKET ANALYSIS TAB
+# ═══════════════════════════════════════════════════════════════
+
+with tab_analysis:
+    # ── Market vibe strip ──
+    _fng = fetch_fear_greed()
+    _dom = fetch_btc_dominance()
+
+    vc1, vc2, vc3, vc4 = st.columns(4)
+    if _fng:
+        fng_color = "#F6465D" if _fng["value"] < 30 else ("#FCD535" if _fng["value"] < 55 else "#0ECB81")
+        vc1.markdown(
+            f"""<div style="padding:14px;background:#1E2329;border-radius:8px;">
+            <div style="color:#848E9C;font-size:11px;">Fear &amp; Greed</div>
+            <div style="color:{fng_color};font-size:24px;font-weight:700;">{_fng['value']}</div>
+            <div style="color:#EAECEF;font-size:12px;">{_fng['classification']}</div>
+            </div>""", unsafe_allow_html=True,
+        )
+    else:
+        vc1.info("F&G: n/a")
+
+    if _dom:
+        mcap_color = "#0ECB81" if _dom["mcap_change_24h"] >= 0 else "#F6465D"
+        vc2.markdown(
+            f"""<div style="padding:14px;background:#1E2329;border-radius:8px;">
+            <div style="color:#848E9C;font-size:11px;">BTC Dominance</div>
+            <div style="color:#EAECEF;font-size:24px;font-weight:700;">{_dom['btc_dom']:.1f}%</div>
+            <div style="color:#848E9C;font-size:12px;">of total market cap</div>
+            </div>""", unsafe_allow_html=True,
+        )
+        vc3.markdown(
+            f"""<div style="padding:14px;background:#1E2329;border-radius:8px;">
+            <div style="color:#848E9C;font-size:11px;">Total Market Cap</div>
+            <div style="color:#EAECEF;font-size:24px;font-weight:700;">${_dom['total_mcap_usd']/1e12:.2f}T</div>
+            <div style="color:{mcap_color};font-size:12px;">{_dom['mcap_change_24h']:+.2f}% 24h</div>
+            </div>""", unsafe_allow_html=True,
+        )
+    else:
+        vc2.info("BTC dom: n/a")
+        vc3.info("Market cap: n/a")
+
+    # Regime hint from F&G
+    if _fng:
+        if _fng["value"] < 25:
+            regime_txt = "🟢 Extreme fear — thường là vùng DCA / mua dần"
+            regime_color = "#0ECB81"
+        elif _fng["value"] < 45:
+            regime_txt = "🟡 Fear — thận trọng, ưu tiên strat contrarian"
+            regime_color = "#FCD535"
+        elif _fng["value"] < 65:
+            regime_txt = "⚪ Neutral — chiến lược bình thường"
+            regime_color = "#848E9C"
+        elif _fng["value"] < 80:
+            regime_txt = "🟠 Greed — tránh chase đỉnh"
+            regime_color = "#F6465D"
+        else:
+            regime_txt = "🔴 Extreme greed — nguy cơ reversal cao"
+            regime_color = "#F6465D"
+        vc4.markdown(
+            f"""<div style="padding:14px;background:#1E2329;border-radius:8px;">
+            <div style="color:#848E9C;font-size:11px;">Gợi ý ngày hôm nay</div>
+            <div style="color:{regime_color};font-size:13px;font-weight:600;margin-top:4px;">{regime_txt}</div>
+            </div>""", unsafe_allow_html=True,
+        )
+
+    st.divider()
+
+    # ── Top Gainers / Losers ──
+    _movers = fetch_top_movers(top_n=10)
+    gc, lc = st.columns(2)
+    with gc:
+        st.markdown(f"#### 🟢 Top Gainers 24h")
+        if _movers["gainers"]:
+            g_df = pd.DataFrame(_movers["gainers"])
+            g_df["Price"] = g_df["last"].apply(lambda x: f"${x:,.4f}" if x < 10 else f"${x:,.2f}")
+            g_df["24h"] = g_df["pct_24h"].apply(lambda x: f"+{x:.2f}%")
+            g_df["Volume"] = g_df["quote_vol"].apply(lambda x: f"${x/1e6:.1f}M")
+            st.dataframe(
+                g_df[["symbol", "Price", "24h", "Volume"]].rename(columns={"symbol": "Symbol"}),
+                use_container_width=True, hide_index=True,
+            )
+        else:
+            st.info("Không có dữ liệu")
+    with lc:
+        st.markdown(f"#### 🔴 Top Losers 24h")
+        if _movers["losers"]:
+            l_df = pd.DataFrame(_movers["losers"])
+            l_df["Price"] = l_df["last"].apply(lambda x: f"${x:,.4f}" if x < 10 else f"${x:,.2f}")
+            l_df["24h"] = l_df["pct_24h"].apply(lambda x: f"{x:.2f}%")
+            l_df["Volume"] = l_df["quote_vol"].apply(lambda x: f"${x/1e6:.1f}M")
+            st.dataframe(
+                l_df[["symbol", "Price", "24h", "Volume"]].rename(columns={"symbol": "Symbol"}),
+                use_container_width=True, hide_index=True,
+            )
+        else:
+            st.info("Không có dữ liệu")
+
+    st.divider()
+
+    # ── Watchlist heatmap (24h pct from cached tickers) ──
+    st.markdown(f"#### 🌡️ Watchlist 24h Heatmap")
+    if _tickers:
+        cells = []
+        for sym in WATCHED_COINS:
+            tk = _tickers.get(sym)
+            if not tk:
+                continue
+            pct = tk.get("percentage") or 0
+            last = tk.get("last") or 0
+            cells.append({"sym": sym.replace("/USDT", ""), "pct": pct, "last": last})
+        if cells:
+            ncols = 5
+            rows = [cells[i:i + ncols] for i in range(0, len(cells), ncols)]
+            for row in rows:
+                row_cols = st.columns(ncols)
+                for i, cell in enumerate(row):
+                    if cell["pct"] >= 5: bg = "#0ECB81"
+                    elif cell["pct"] >= 2: bg = "rgba(14,203,129,0.5)"
+                    elif cell["pct"] >= 0: bg = "rgba(14,203,129,0.2)"
+                    elif cell["pct"] >= -2: bg = "rgba(246,70,93,0.2)"
+                    elif cell["pct"] >= -5: bg = "rgba(246,70,93,0.5)"
+                    else: bg = "#F6465D"
+                    row_cols[i].markdown(
+                        f"""<div style="padding:10px;background:{bg};border-radius:6px;text-align:center;">
+                        <div style="color:#FFF;font-weight:700;font-size:13px;">{cell['sym']}</div>
+                        <div style="color:#FFF;font-size:11px;">{cell['pct']:+.2f}%</div>
+                        </div>""", unsafe_allow_html=True,
+                    )
+        else:
+            st.info("Không có dữ liệu ticker")
+    else:
+        st.info("Ticker API không khả dụng")
+
+    st.divider()
+
+    # ── Funding rates for watched coins ──
+    st.markdown(f"#### 💰 Funding Rate (Binance USDT-M)")
+    _fr = fetch_funding_rates_batch(tuple(WATCHED_COINS[:12]))  # first 12 to avoid rate limits
+    if _fr:
+        fr_rows = []
+        for sym, data in _fr.items():
+            rate = data.get("current_rate") if isinstance(data, dict) else None
+            if rate is None or not data.get("available", True):
+                continue
+            fr_rows.append({
+                "Symbol": sym,
+                "Funding": f"{float(rate)*100:+.4f}%",
+                "Avg 24h": f"{float(data.get('avg_rate_24h') or 0)*100:+.4f}%",
+                "Trend": data.get("trend", "-"),
+                "_rate": float(rate),
+            })
+        if fr_rows:
+            fr_rows.sort(key=lambda r: r["_rate"])
+            fr_df = pd.DataFrame(fr_rows).drop(columns=["_rate"])
+            fc1, fc2 = st.columns(2)
+            fc1.markdown("**Lowest (shorts paying longs — bullish pressure)**")
+            fc1.dataframe(fr_df.head(5), use_container_width=True, hide_index=True)
+            fc2.markdown("**Highest (longs paying shorts — overleveraged longs)**")
+            fc2.dataframe(fr_df.tail(5).iloc[::-1], use_container_width=True, hide_index=True)
+        else:
+            st.info("Funding rate không khả dụng")
+    else:
+        st.info("Funding rate không khả dụng")
+
+
+# ═══════════════════════════════════════════════════════════════
+# SIGNALS TAB
+# ═══════════════════════════════════════════════════════════════
+
+with tab_signals:
+    st.markdown(f"#### 🎯 Tín hiệu trực tiếp từ bot ({t('subtitle') if False else 'cập nhật mỗi 5 phút'})")
+    st.caption("Quét chính xác logic strategy bot dùng — khi bot tick tiếp theo các tín hiệu dưới đây sẽ được bot đánh giá.")
+
+    with st.spinner("Đang quét tín hiệu trên 10 coin..."):
+        _live_sigs = fetch_live_signals()
+
+    if not _live_sigs:
+        st.warning("Chưa có dữ liệu tín hiệu (có thể signal generator đang khởi động hoặc ccxt lỗi).")
+    else:
+        active = [s for s in _live_sigs if s.get("signal", 0) != 0]
+        neutral = [s for s in _live_sigs if s.get("signal", 0) == 0]
+
+        sc1, sc2, sc3 = st.columns(3)
+        sc1.metric("Coin quét", len(_live_sigs))
+        sc2.metric("Có tín hiệu", len(active))
+        sc3.metric("Trung lập", len(neutral))
+
+        st.divider()
+
+        if active:
+            st.markdown("##### ✅ Coin đang cho tín hiệu vào lệnh")
+            rows = []
+            for s in active:
+                side = "LONG" if s["signal"] == 1 else "SHORT"
+                entry = s.get("close", 0)
+                stop_pct = s.get("stop_loss", 0.025)
+                if s["signal"] == 1:
+                    stop = entry * (1 - stop_pct)
+                    tp1 = entry + (entry - stop) * 2
+                    tp2 = entry + (entry - stop) * 3
+                else:
+                    stop = entry * (1 + stop_pct)
+                    tp1 = entry - (stop - entry) * 2
+                    tp2 = entry - (stop - entry) * 3
+                rows.append({
+                    "Symbol": s.get("symbol", ""),
+                    "Side": side,
+                    "Strategy": s.get("strategy", "-"),
+                    "Entry": f"${entry:,.4f}" if entry < 10 else f"${entry:,.2f}",
+                    "Stop": f"${stop:,.4f}" if stop < 10 else f"${stop:,.2f}",
+                    "TP1 (2R)": f"${tp1:,.4f}" if tp1 < 10 else f"${tp1:,.2f}",
+                    "TP2 (3R)": f"${tp2:,.4f}" if tp2 < 10 else f"${tp2:,.2f}",
+                    "Regime": s.get("regime", "-"),
+                    "MTF 1D": s.get("mtf_daily", "-"),
+                    "Reason": s.get("reason", "")[:60],
+                })
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("Hiện không có coin nào cho tín hiệu vào lệnh. Bot sẽ tiếp tục quan sát.")
+
+        if neutral:
+            with st.expander(f"Trung lập ({len(neutral)} coin) — đang quan sát, chờ điều kiện"):
+                rows = []
+                for s in neutral:
+                    rows.append({
+                        "Symbol": s.get("symbol", ""),
+                        "Strategy": s.get("strategy", "-"),
+                        "Regime": s.get("regime", "-"),
+                        "MTF 1D": s.get("mtf_daily", "-"),
+                        "RSI": f"{s.get('rsi', 0):.1f}" if s.get("rsi") else "-",
+                        "ROC10": f"{s.get('roc_10', 0):+.2f}%" if s.get("roc_10") is not None else "-",
+                        "ADX": f"{s.get('adx', 0):.1f}" if s.get("adx") else "-",
+                        "Reason": s.get("reason", "")[:60],
+                    })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 # ═══════════════════════════════════════════════════════════════
