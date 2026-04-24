@@ -108,25 +108,62 @@ div[data-testid="stMetric"] div[data-testid="stMetricDelta"] > div {
     font-weight: 600 !important;
 }
 
-/* ===== TABS ===== */
+/* ===== TABS — top-level pill nav ===== */
 div[data-testid="stTabs"] {
     background-color: transparent;
 }
-button[data-baseweb="tab"] {
+/* Top-level tab list: padding + subtle separator */
+div[data-testid="stTabs"] > div:first-child > div[data-baseweb="tab-list"] {
+    background: #1E2329;
+    border: 1px solid #2B3139;
+    border-radius: 10px;
+    padding: 6px;
+    gap: 4px;
+    margin-bottom: 12px;
+    overflow-x: auto;
+}
+div[data-testid="stTabs"] > div:first-child > div[data-baseweb="tab-list"] button[data-baseweb="tab"] {
     color: #848E9C !important;
     background-color: transparent !important;
     font-weight: 500 !important;
-    font-size: 15px !important;
-    padding: 12px 24px !important;
-    transition: all 0.2s ease !important;
+    font-size: 14px !important;
+    padding: 10px 18px !important;
+    border-radius: 7px !important;
+    border: none !important;
+    transition: all 0.15s ease !important;
+    white-space: nowrap;
+    margin: 0 !important;
 }
-button[data-baseweb="tab"]:hover {
+div[data-testid="stTabs"] > div:first-child > div[data-baseweb="tab-list"] button[data-baseweb="tab"]:hover {
     color: #EAECEF !important;
-    background-color: rgba(252,213,53,0.05) !important;
+    background-color: rgba(252,213,53,0.06) !important;
 }
-button[data-baseweb="tab"][aria-selected="true"] {
+div[data-testid="stTabs"] > div:first-child > div[data-baseweb="tab-list"] button[data-baseweb="tab"][aria-selected="true"] {
+    color: #0B0E11 !important;
+    background: linear-gradient(135deg, #FCD535 0%, #F0B90B 100%) !important;
+    font-weight: 700 !important;
+    box-shadow: 0 2px 8px rgba(240,185,11,0.25);
+}
+/* Hide the tab-list bottom indicator (we use full bg now) */
+div[data-testid="stTabs"] > div:first-child > div[data-baseweb="tab-list"] [data-baseweb="tab-highlight"],
+div[data-testid="stTabs"] > div:first-child > div[data-baseweb="tab-list"] [data-baseweb="tab-border"] {
+    display: none !important;
+}
+
+/* ===== Nested (sub) tabs — keep slim underline style ===== */
+div[data-testid="stTabs"] div[data-baseweb="tab-list"] div[data-baseweb="tab-list"] button[data-baseweb="tab"] {
+    color: #848E9C !important;
+    background-color: transparent !important;
+    font-size: 13px !important;
+    padding: 8px 14px !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+}
+div[data-testid="stTabs"] div[data-baseweb="tab-list"] div[data-baseweb="tab-list"] button[data-baseweb="tab"][aria-selected="true"] {
     color: #FCD535 !important;
-    border-bottom: 3px solid #FCD535 !important;
+    background: transparent !important;
+    border-bottom: 2px solid #FCD535 !important;
     font-weight: 600 !important;
 }
 
@@ -1810,12 +1847,12 @@ with _hero_col1:
 # ═══════════════════════════════════════════════════════════════
 
 tab_market, tab_analysis, tab_signals, tab_trading, tab_backtest, tab_performance = st.tabs([
-    t("tab_market"),
-    t("tab_analysis"),
-    t("tab_signals"),
-    t("tab_trading"),
-    t("tab_backtest"),
-    t("tab_performance"),
+    f"📈  {t('tab_market')}",
+    f"🌐  {t('tab_analysis')}",
+    f"🎯  {t('tab_signals')}",
+    f"💱  {t('tab_trading')}",
+    f"🧪  {t('tab_backtest')}",
+    f"⚡  {t('tab_performance')}",
 ])
 
 # ═══════════════════════════════════════════════════════════════
