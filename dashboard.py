@@ -531,6 +531,36 @@ LANG = {
         "tab_trading": "Giao dịch",
         "tab_backtest": "Phân tích Backtest",
         "tab_performance": "Hiệu suất",
+        "fng_label": "Chỉ số Sợ hãi & Tham lam",
+        "btc_dom_label": "Thống trị của BTC",
+        "btc_dom_sub": "của tổng market cap",
+        "total_mcap_label": "Tổng Market Cap",
+        "regime_hint_label": "Gợi ý ngày hôm nay",
+        "regime_extreme_fear": "Sợ hãi cực độ — thường là vùng DCA / mua dần",
+        "regime_fear": "Sợ hãi — thận trọng, ưu tiên chiến lược contrarian",
+        "regime_neutral": "Trung lập — chiến lược bình thường",
+        "regime_greed": "Tham lam — tránh đu đỉnh",
+        "regime_extreme_greed": "Tham lam cực độ — nguy cơ đảo chiều cao",
+        "top_gainers": "Top tăng mạnh 24h",
+        "top_losers": "Top giảm mạnh 24h",
+        "no_data_available": "Không có dữ liệu",
+        "heatmap_title": "Heatmap watchlist 24h",
+        "funding_title": "Funding Rate (Binance USDT-M)",
+        "funding_low": "Thấp nhất (short trả cho long — áp lực tăng)",
+        "funding_high": "Cao nhất (long trả cho short — long over-leverage)",
+        "signals_live_title": "Tín hiệu trực tiếp từ bot",
+        "signals_cache_hint": "cập nhật mỗi 5 phút",
+        "signals_caption": "Quét chính xác logic strategy bot dùng. Khi bot tick tiếp theo các tín hiệu dưới đây sẽ được bot đánh giá.",
+        "signals_scanning": "Đang quét tín hiệu…",
+        "signals_no_data": "Chưa có dữ liệu tín hiệu (signal generator có thể đang khởi động hoặc API lỗi).",
+        "signals_scanned": "Coin quét",
+        "signals_active": "Có tín hiệu",
+        "signals_neutral": "Trung lập",
+        "signals_active_title": "Coin đang cho tín hiệu vào lệnh",
+        "signals_none_active": "Hiện không có coin nào cho tín hiệu vào lệnh. Bot sẽ tiếp tục quan sát.",
+        "signals_neutral_expander": "coin trung lập — đang quan sát, chờ điều kiện",
+        "refresh_data": "Làm mới dữ liệu",
+        "load_error": "Lỗi tải dữ liệu — bấm làm mới để thử lại",
         "market_watch": "Giá thị trường",
         "overview_24h": "Tổng quan 24h",
         "candlestick_chart": "Biểu đồ nến",
@@ -640,6 +670,36 @@ LANG = {
         "tab_trading": "Trading",
         "tab_backtest": "Backtest Analysis",
         "tab_performance": "Performance",
+        "fng_label": "Fear & Greed",
+        "btc_dom_label": "BTC Dominance",
+        "btc_dom_sub": "of total market cap",
+        "total_mcap_label": "Total Market Cap",
+        "regime_hint_label": "Today's hint",
+        "regime_extreme_fear": "Extreme fear — usually a DCA / dip-buy zone",
+        "regime_fear": "Fear — be cautious, favor contrarian strategies",
+        "regime_neutral": "Neutral — standard playbook",
+        "regime_greed": "Greed — avoid chasing tops",
+        "regime_extreme_greed": "Extreme greed — high reversal risk",
+        "top_gainers": "Top Gainers 24h",
+        "top_losers": "Top Losers 24h",
+        "no_data_available": "No data",
+        "heatmap_title": "Watchlist 24h heatmap",
+        "funding_title": "Funding Rate (Binance USDT-M)",
+        "funding_low": "Lowest (shorts paying longs — bullish pressure)",
+        "funding_high": "Highest (longs paying shorts — overleveraged longs)",
+        "signals_live_title": "Live signals from the bot",
+        "signals_cache_hint": "refreshed every 5 min",
+        "signals_caption": "Runs the same strategy the bot uses. The signals below will be evaluated by the bot on its next tick.",
+        "signals_scanning": "Scanning signals…",
+        "signals_no_data": "No signal data yet (signal generator may be starting up or API failed).",
+        "signals_scanned": "Scanned",
+        "signals_active": "Active",
+        "signals_neutral": "Neutral",
+        "signals_active_title": "Coins currently giving entry signals",
+        "signals_none_active": "No coins currently signaling. The bot will keep watching.",
+        "signals_neutral_expander": "neutral coins — being watched, waiting for conditions",
+        "refresh_data": "Refresh data",
+        "load_error": "Failed to load data — click refresh to retry",
         "market_watch": "Market Watch",
         "overview_24h": "24h Overview",
         "candlestick_chart": "Candlestick Chart",
@@ -918,16 +978,12 @@ def fetch_ohlcv_batch(symbols: tuple, timeframe: str = "1h", limit: int = 48) ->
 @st.cache_data(ttl=300)
 def fetch_top_movers(top_n: int = 10) -> dict:
     """Top gainers & losers across all USDT spot pairs in the last 24h.
-    Returns {"gainers": [...], "losers": [...]} each a list of dicts.
+    Raises on failure so Streamlit doesn't cache empty results for 5min.
     """
     if ccxt is None:
         return {"gainers": [], "losers": []}
-    try:
-        ex = ccxt.binance({"enableRateLimit": True})
-        tickers = ex.fetch_tickers()
-    except Exception:
-        return {"gainers": [], "losers": []}
-
+    ex = ccxt.binance({"enableRateLimit": True, "timeout": 15000})
+    tickers = ex.fetch_tickers()
     rows = []
     for sym, tk in tickers.items():
         if not sym.endswith("/USDT"):
@@ -936,7 +992,7 @@ def fetch_top_movers(top_n: int = 10) -> dict:
         last = tk.get("last")
         quote_vol = tk.get("quoteVolume") or 0
         if pct is None or last is None or quote_vol < 1_000_000:
-            continue  # drop illiquid pairs
+            continue
         rows.append({
             "symbol": sym,
             "last": last,
@@ -1496,6 +1552,16 @@ with tab_market:
 # ═══════════════════════════════════════════════════════════════
 
 with tab_analysis:
+    # Manual refresh button (clears all cached data on this tab)
+    rcol1, rcol2 = st.columns([10, 1])
+    with rcol2:
+        if st.button("🔄", help=t("refresh_data"), key="refresh_analysis"):
+            fetch_top_movers.clear()
+            fetch_funding_rates_batch.clear()
+            fetch_fear_greed.clear()
+            fetch_btc_dominance.clear()
+            st.rerun()
+
     # ── Market vibe strip ──
     _fng = fetch_fear_greed()
     _dom = fetch_btc_dominance()
@@ -1505,54 +1571,53 @@ with tab_analysis:
         fng_color = "#F6465D" if _fng["value"] < 30 else ("#FCD535" if _fng["value"] < 55 else "#0ECB81")
         vc1.markdown(
             f"""<div style="padding:14px;background:#1E2329;border-radius:8px;">
-            <div style="color:#848E9C;font-size:11px;">Fear &amp; Greed</div>
+            <div style="color:#848E9C;font-size:11px;">{t('fng_label')}</div>
             <div style="color:{fng_color};font-size:24px;font-weight:700;">{_fng['value']}</div>
             <div style="color:#EAECEF;font-size:12px;">{_fng['classification']}</div>
             </div>""", unsafe_allow_html=True,
         )
     else:
-        vc1.info("F&G: n/a")
+        vc1.info(f"{t('fng_label')}: n/a")
 
     if _dom:
         mcap_color = "#0ECB81" if _dom["mcap_change_24h"] >= 0 else "#F6465D"
         vc2.markdown(
             f"""<div style="padding:14px;background:#1E2329;border-radius:8px;">
-            <div style="color:#848E9C;font-size:11px;">BTC Dominance</div>
+            <div style="color:#848E9C;font-size:11px;">{t('btc_dom_label')}</div>
             <div style="color:#EAECEF;font-size:24px;font-weight:700;">{_dom['btc_dom']:.1f}%</div>
-            <div style="color:#848E9C;font-size:12px;">of total market cap</div>
+            <div style="color:#848E9C;font-size:12px;">{t('btc_dom_sub')}</div>
             </div>""", unsafe_allow_html=True,
         )
         vc3.markdown(
             f"""<div style="padding:14px;background:#1E2329;border-radius:8px;">
-            <div style="color:#848E9C;font-size:11px;">Total Market Cap</div>
+            <div style="color:#848E9C;font-size:11px;">{t('total_mcap_label')}</div>
             <div style="color:#EAECEF;font-size:24px;font-weight:700;">${_dom['total_mcap_usd']/1e12:.2f}T</div>
             <div style="color:{mcap_color};font-size:12px;">{_dom['mcap_change_24h']:+.2f}% 24h</div>
             </div>""", unsafe_allow_html=True,
         )
     else:
-        vc2.info("BTC dom: n/a")
-        vc3.info("Market cap: n/a")
+        vc2.info(f"{t('btc_dom_label')}: n/a")
+        vc3.info(f"{t('total_mcap_label')}: n/a")
 
-    # Regime hint from F&G
     if _fng:
         if _fng["value"] < 25:
-            regime_txt = "🟢 Extreme fear — thường là vùng DCA / mua dần"
+            regime_txt = f"🟢 {t('regime_extreme_fear')}"
             regime_color = "#0ECB81"
         elif _fng["value"] < 45:
-            regime_txt = "🟡 Fear — thận trọng, ưu tiên strat contrarian"
+            regime_txt = f"🟡 {t('regime_fear')}"
             regime_color = "#FCD535"
         elif _fng["value"] < 65:
-            regime_txt = "⚪ Neutral — chiến lược bình thường"
+            regime_txt = f"⚪ {t('regime_neutral')}"
             regime_color = "#848E9C"
         elif _fng["value"] < 80:
-            regime_txt = "🟠 Greed — tránh chase đỉnh"
+            regime_txt = f"🟠 {t('regime_greed')}"
             regime_color = "#F6465D"
         else:
-            regime_txt = "🔴 Extreme greed — nguy cơ reversal cao"
+            regime_txt = f"🔴 {t('regime_extreme_greed')}"
             regime_color = "#F6465D"
         vc4.markdown(
             f"""<div style="padding:14px;background:#1E2329;border-radius:8px;">
-            <div style="color:#848E9C;font-size:11px;">Gợi ý ngày hôm nay</div>
+            <div style="color:#848E9C;font-size:11px;">{t('regime_hint_label')}</div>
             <div style="color:{regime_color};font-size:13px;font-weight:600;margin-top:4px;">{regime_txt}</div>
             </div>""", unsafe_allow_html=True,
         )
@@ -1560,10 +1625,16 @@ with tab_analysis:
     st.divider()
 
     # ── Top Gainers / Losers ──
-    _movers = fetch_top_movers(top_n=10)
+    try:
+        _movers = fetch_top_movers(top_n=10)
+        _movers_err = None
+    except Exception as e:
+        _movers = {"gainers": [], "losers": []}
+        _movers_err = str(e)
+
     gc, lc = st.columns(2)
     with gc:
-        st.markdown(f"#### 🟢 Top Gainers 24h")
+        st.markdown(f"#### 🟢 {t('top_gainers')}")
         if _movers["gainers"]:
             g_df = pd.DataFrame(_movers["gainers"])
             g_df["Price"] = g_df["last"].apply(lambda x: f"${x:,.4f}" if x < 10 else f"${x:,.2f}")
@@ -1574,9 +1645,9 @@ with tab_analysis:
                 use_container_width=True, hide_index=True,
             )
         else:
-            st.info("Không có dữ liệu")
+            st.info(t("load_error") if _movers_err else t("no_data_available"))
     with lc:
-        st.markdown(f"#### 🔴 Top Losers 24h")
+        st.markdown(f"#### 🔴 {t('top_losers')}")
         if _movers["losers"]:
             l_df = pd.DataFrame(_movers["losers"])
             l_df["Price"] = l_df["last"].apply(lambda x: f"${x:,.4f}" if x < 10 else f"${x:,.2f}")
@@ -1587,12 +1658,12 @@ with tab_analysis:
                 use_container_width=True, hide_index=True,
             )
         else:
-            st.info("Không có dữ liệu")
+            st.info(t("load_error") if _movers_err else t("no_data_available"))
 
     st.divider()
 
     # ── Watchlist heatmap (24h pct from cached tickers) ──
-    st.markdown(f"#### 🌡️ Watchlist 24h Heatmap")
+    st.markdown(f"#### 🌡️ {t('heatmap_title')}")
     if _tickers:
         cells = []
         for sym in WATCHED_COINS:
@@ -1621,15 +1692,15 @@ with tab_analysis:
                         </div>""", unsafe_allow_html=True,
                     )
         else:
-            st.info("Không có dữ liệu ticker")
+            st.info(t("no_data_available"))
     else:
-        st.info("Ticker API không khả dụng")
+        st.info(t("no_data_available"))
 
     st.divider()
 
     # ── Funding rates for watched coins ──
-    st.markdown(f"#### 💰 Funding Rate (Binance USDT-M)")
-    _fr = fetch_funding_rates_batch(tuple(WATCHED_COINS[:12]))  # first 12 to avoid rate limits
+    st.markdown(f"#### 💰 {t('funding_title')}")
+    _fr = fetch_funding_rates_batch(tuple(WATCHED_COINS[:12]))
     if _fr:
         fr_rows = []
         for sym, data in _fr.items():
@@ -1647,14 +1718,14 @@ with tab_analysis:
             fr_rows.sort(key=lambda r: r["_rate"])
             fr_df = pd.DataFrame(fr_rows).drop(columns=["_rate"])
             fc1, fc2 = st.columns(2)
-            fc1.markdown("**Lowest (shorts paying longs — bullish pressure)**")
+            fc1.markdown(f"**{t('funding_low')}**")
             fc1.dataframe(fr_df.head(5), use_container_width=True, hide_index=True)
-            fc2.markdown("**Highest (longs paying shorts — overleveraged longs)**")
+            fc2.markdown(f"**{t('funding_high')}**")
             fc2.dataframe(fr_df.tail(5).iloc[::-1], use_container_width=True, hide_index=True)
         else:
-            st.info("Funding rate không khả dụng")
+            st.info(t("no_data_available"))
     else:
-        st.info("Funding rate không khả dụng")
+        st.info(t("no_data_available"))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1662,27 +1733,33 @@ with tab_analysis:
 # ═══════════════════════════════════════════════════════════════
 
 with tab_signals:
-    st.markdown(f"#### 🎯 Tín hiệu trực tiếp từ bot ({t('subtitle') if False else 'cập nhật mỗi 5 phút'})")
-    st.caption("Quét chính xác logic strategy bot dùng — khi bot tick tiếp theo các tín hiệu dưới đây sẽ được bot đánh giá.")
+    rcol1, rcol2 = st.columns([10, 1])
+    with rcol2:
+        if st.button("🔄", help=t("refresh_data"), key="refresh_signals"):
+            fetch_live_signals.clear()
+            st.rerun()
 
-    with st.spinner("Đang quét tín hiệu trên 10 coin..."):
+    st.markdown(f"#### 🎯 {t('signals_live_title')} ({t('signals_cache_hint')})")
+    st.caption(t("signals_caption"))
+
+    with st.spinner(t("signals_scanning")):
         _live_sigs = fetch_live_signals()
 
     if not _live_sigs:
-        st.warning("Chưa có dữ liệu tín hiệu (có thể signal generator đang khởi động hoặc ccxt lỗi).")
+        st.warning(t("signals_no_data"))
     else:
         active = [s for s in _live_sigs if s.get("signal", 0) != 0]
         neutral = [s for s in _live_sigs if s.get("signal", 0) == 0]
 
         sc1, sc2, sc3 = st.columns(3)
-        sc1.metric("Coin quét", len(_live_sigs))
-        sc2.metric("Có tín hiệu", len(active))
-        sc3.metric("Trung lập", len(neutral))
+        sc1.metric(t("signals_scanned"), len(_live_sigs))
+        sc2.metric(t("signals_active"), len(active))
+        sc3.metric(t("signals_neutral"), len(neutral))
 
         st.divider()
 
         if active:
-            st.markdown("##### ✅ Coin đang cho tín hiệu vào lệnh")
+            st.markdown(f"##### ✅ {t('signals_active_title')}")
             rows = []
             for s in active:
                 side = "LONG" if s["signal"] == 1 else "SHORT"
@@ -1710,10 +1787,10 @@ with tab_signals:
                 })
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
         else:
-            st.info("Hiện không có coin nào cho tín hiệu vào lệnh. Bot sẽ tiếp tục quan sát.")
+            st.info(t("signals_none_active"))
 
         if neutral:
-            with st.expander(f"Trung lập ({len(neutral)} coin) — đang quan sát, chờ điều kiện"):
+            with st.expander(f"{len(neutral)} {t('signals_neutral_expander')}"):
                 rows = []
                 for s in neutral:
                     rows.append({
