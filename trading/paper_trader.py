@@ -62,7 +62,7 @@ class PaperTrader:
         self.signal_gen = SignalGenerator()
         self.risk_mgr = RiskManager()
         self.onchain_filter = OnchainSignalFilter()
-        self.tg = TelegramAlert()
+        self.tg = TelegramAlert(mode="spot")
         self._last_daily_report = None
         self._signal_cooldowns: dict = {}  # {(symbol, direction): timestamp}
         self.price_monitor = None

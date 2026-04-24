@@ -43,10 +43,13 @@ def _position_value(pos: dict) -> float:
 class TelegramAlert:
     """Sends formatted alerts via Telegram bot."""
 
-    def __init__(self, token: str = None, chat_id: str = None):
+    def __init__(self, token: str = None, chat_id: str = None, mode: str = None):
         self.token = token or TELEGRAM_BOT_TOKEN
         self.chat_id = chat_id or TELEGRAM_CHAT_ID
         self.enabled = bool(self.token and self.chat_id)
+        # Mode tag ("spot" or "futures") used by mode-aware commands so action
+        # commands (/pause /resume /close) only act+reply on the matching bot.
+        self.mode = mode
 
         # Command listener state
         self._listener_thread = None
@@ -415,42 +418,68 @@ class TelegramAlert:
 
     def _handle_command(self, text: str, chat_id: str):
         """Handle an incoming command from the authorized user."""
-        cmd = text.lower().split()[0] if text else ""
+        parts = text.split()
+        cmd = parts[0].lower() if parts else ""
+        args = parts[1:]
 
         if cmd in ("/start", "/help"):
+            # Only the spot bot replies to /help to avoid duplicate menu spam
+            if self.mode and self.mode != "spot":
+                return
             msg = (
-                "🤖 <b>Crypto Alpha Bot - Lệnh điều khiển</b>\n"
+                "🤖 <b>Crypto Alpha Bot — Commands</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
-                "/status - Trạng thái tổng quan\n"
-                "/balance - Số dư tài khoản chi tiết\n"
-                "/positions - Vị thế đang mở\n"
-                "/history - 10 giao dịch gần nhất\n"
-                "/pnl - Phân tích lãi/lỗ\n"
-                "/report - Báo cáo hàng ngày\n"
-                "/help - Hiển thị menu này\n"
+                "<b>📊 Read</b>\n"
+                "/status — Overview\n"
+                "/balance — Detailed balance\n"
+                "/positions — Open positions\n"
+                "/today — Today's trades + PnL\n"
+                "/history — Last 10 trades\n"
+                "/pnl — PnL analysis\n"
+                "/report — Daily report\n"
+                "/blacklist — Show blacklisted coins\n"
+                "/weekly — Weekly digest\n"
+                "\n"
+                "<b>🎛️ Action</b>\n"
+                "/pause &lt;spot|fut|both&gt; [hours] — default 4h\n"
+                "/resume &lt;spot|fut|both&gt;\n"
+                "/close &lt;spot|fut&gt; SYMBOL [pct] — default 100\n"
+                "\n"
+                "Examples:\n"
+                "<code>/pause spot 8</code>\n"
+                "<code>/close fut BTC 50</code>\n"
             )
             self.send(msg)
 
         elif cmd == "/status":
             self._cmd_status()
-
         elif cmd == "/balance":
             self._cmd_balance()
-
         elif cmd == "/positions":
             self._cmd_positions()
-
+        elif cmd == "/today":
+            self._cmd_today()
         elif cmd == "/history":
             self._cmd_history()
-
         elif cmd == "/pnl":
             self._cmd_pnl()
-
         elif cmd == "/report":
             self._cmd_report()
-
+        elif cmd == "/blacklist":
+            self._cmd_blacklist()
+        elif cmd == "/weekly":
+            self._cmd_weekly()
+        elif cmd == "/pause":
+            self._cmd_pause(args)
+        elif cmd == "/resume":
+            self._cmd_resume(args)
+        elif cmd == "/close":
+            self._cmd_close(args)
         else:
-            self.send(f"❓ Lệnh không hợp lệ: <code>{cmd}</code>\nGõ /help để xem danh sách lệnh.")
+            # Only spot bot replies to unknown commands (avoid duplicate)
+            if self.mode and self.mode != "spot":
+                return
+            self.send(f"❓ Unknown command: <code>{cmd}</code>\nType /help for the list.")
 
     def _cmd_status(self):
         """Handle /status command."""
@@ -653,3 +682,162 @@ class TelegramAlert:
             return
 
         self.send_daily_report(state, prices)
+
+    # ── Action commands (mode-aware) ──
+
+    def _mode_match(self, arg: str) -> bool:
+        """True if this bot's mode matches the user's mode argument.
+        arg in {spot, fut, futures, both}."""
+        if not self.mode:
+            return True
+        a = (arg or "").lower()
+        if a in ("both", "all", ""):
+            return True
+        if a == "spot" and self.mode == "spot":
+            return True
+        if a in ("fut", "futures") and self.mode == "futures":
+            return True
+        return False
+
+    def _mode_label(self) -> str:
+        return "·[spot]" if self.mode == "spot" else "🔥[fut]"
+
+    def _cmd_pause(self, args: list):
+        """/pause <spot|fut|both> [hours]   default hours=4"""
+        if not args:
+            if self.mode == "spot":
+                self.send("Usage: <code>/pause &lt;spot|fut|both&gt; [hours]</code>")
+            return
+        target = args[0].lower()
+        if not self._mode_match(target):
+            return
+        try:
+            hours = float(args[1]) if len(args) > 1 else 4.0
+            hours = max(0.5, min(168.0, hours))
+        except (ValueError, IndexError):
+            hours = 4.0
+
+        from trading import manual_actions
+        mode_key = "spot" if self.mode == "spot" else "futures"
+        manual_actions.append_pause(mode_key, hours)
+        self.send(f"⏸️ <b>{self._mode_label()} PAUSE queued</b> {hours:g}h "
+                  f"(bot xử lý trong ≤30s)")
+
+    def _cmd_resume(self, args: list):
+        """/resume <spot|fut|both>"""
+        if not args:
+            if self.mode == "spot":
+                self.send("Usage: <code>/resume &lt;spot|fut|both&gt;</code>")
+            return
+        target = args[0].lower()
+        if not self._mode_match(target):
+            return
+        from trading import manual_actions
+        mode_key = "spot" if self.mode == "spot" else "futures"
+        manual_actions.append_resume(mode_key)
+        self.send(f"▶️ <b>{self._mode_label()} RESUME queued</b>")
+
+    def _cmd_close(self, args: list):
+        """/close <spot|fut> SYMBOL [pct]   default pct=100"""
+        if len(args) < 2:
+            if self.mode == "spot":
+                self.send("Usage: <code>/close &lt;spot|fut&gt; SYMBOL [pct]</code>\n"
+                          "Example: <code>/close fut BTC 50</code>")
+            return
+        target = args[0].lower()
+        if not self._mode_match(target):
+            return
+        sym_raw = args[1].upper()
+        symbol = sym_raw if "/" in sym_raw else f"{sym_raw}/USDT"
+        try:
+            pct = float(args[2]) if len(args) > 2 else 100.0
+            pct = max(1, min(100, pct))
+        except (ValueError, IndexError):
+            pct = 100.0
+
+        state = self._state_getter() if self._state_getter else {}
+        if symbol not in state.get("open_positions", {}):
+            self.send(f"⚠️ {self._mode_label()} không có vị thế <b>{symbol}</b>.")
+            return
+
+        from trading import manual_actions
+        mode_key = "spot" if self.mode == "spot" else "futures"
+        manual_actions.append_close(mode_key, symbol, pct / 100)
+        self.send(f"⏳ <b>{self._mode_label()} CLOSE {pct:g}% {symbol}</b> queued "
+                  f"(bot xử lý trong ≤30s)")
+
+    def _cmd_today(self):
+        """/today — today's trades + PnL for this bot's mode."""
+        state = self._state_getter() if self._state_getter else {}
+        if not state:
+            return
+        from datetime import date
+        today_utc = datetime.now(timezone.utc).date()
+        today_trades = []
+        for tr in state.get("trade_history", []):
+            ca = tr.get("closed_at")
+            if not ca:
+                continue
+            try:
+                if datetime.fromisoformat(ca).date() == today_utc:
+                    today_trades.append(tr)
+            except Exception:
+                continue
+
+        if not today_trades:
+            self.send(f"📅 <b>{self._mode_label()} HÔM NAY</b>\nChưa có lệnh nào.")
+            return
+
+        wins = sum(1 for t in today_trades if t.get("pnl_usd", 0) > 0)
+        losses = len(today_trades) - wins
+        total_pnl = sum(t.get("pnl_usd", 0) for t in today_trades)
+        wr = wins / len(today_trades) * 100
+
+        msg = (
+            f"📅 <b>{self._mode_label()} HÔM NAY</b>\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"Lệnh: <code>{len(today_trades)}</code>  "
+            f"({wins}W / {losses}L · WR <code>{wr:.0f}%</code>)\n"
+            f"PnL: <code>${total_pnl:+.2f}</code>\n"
+            f"\n<b>Chi tiết:</b>\n"
+        )
+        for tr in today_trades[-10:]:
+            sym = tr.get("symbol", "")
+            side = tr.get("side", "").upper()
+            pnl = tr.get("pnl_usd", 0)
+            reason = tr.get("reason", "")[:20]
+            emoji = "✅" if pnl > 0 else "❌"
+            msg += f"{emoji} {side} {sym} <code>${pnl:+.2f}</code> · {reason}\n"
+        self.send(msg)
+
+    def _cmd_blacklist(self):
+        """/blacklist — show currently blacklisted symbols for this mode."""
+        state = self._state_getter() if self._state_getter else {}
+        bl = state.get("symbol_blacklist", {})
+        now = datetime.now(timezone.utc)
+        active = []
+        for sym, until in bl.items():
+            try:
+                until_ts = datetime.fromisoformat(until)
+                if until_ts > now:
+                    hrs = (until_ts - now).total_seconds() / 3600
+                    active.append(f"  • <b>{sym}</b> — {hrs:.1f}h còn lại")
+            except Exception:
+                pass
+        if not active:
+            self.send(f"✅ <b>{self._mode_label()}</b> Không coin nào bị blacklist.")
+        else:
+            self.send(f"⛔ <b>{self._mode_label()} BLACKLIST</b>\n" + "\n".join(active))
+
+    def _cmd_weekly(self):
+        """/weekly — stat-based weekly digest for this mode."""
+        state = self._state_getter() if self._state_getter else {}
+        if not state:
+            return
+        try:
+            from utils.weekly_digest import compute_weekly_digest
+            msg = compute_weekly_digest(state, mode_label=self._mode_label())
+            self.send(msg)
+        except Exception as e:
+            logger.error(f"Weekly digest failed: {e}")
+            self.send(f"⚠️ Weekly digest error: {e}")

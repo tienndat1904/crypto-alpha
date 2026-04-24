@@ -379,7 +379,7 @@ class FuturesPaperTrader:
         self.signal_gen = SignalGenerator(configs=FUTURES_ALPHA_CONFIGS)
         self.risk_mgr = FuturesRiskManager()
         self.onchain_filter = OnchainSignalFilter()
-        self.tg = TelegramAlert()
+        self.tg = TelegramAlert(mode="futures")
         self.data_fetcher = BinanceFetcher()
         self._last_data_update = None
         self._last_daily_report = None
