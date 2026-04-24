@@ -579,6 +579,7 @@ LANG = {
         "today_trades": "Lệnh hôm nay",
         "today_pnl": "PnL hôm nay",
         "today_no_trades": "Chưa có lệnh nào hôm nay",
+        "trades_short": "lệnh",
         "control_panel": "Bảng điều khiển",
         "bot_status": "Trạng thái bot",
         "status_active": "Hoạt động",
@@ -750,6 +751,7 @@ LANG = {
         "today_trades": "Today's trades",
         "today_pnl": "Today's PnL",
         "today_no_trades": "No trades today yet",
+        "trades_short": "trades",
         "control_panel": "Control panel",
         "bot_status": "Bot status",
         "status_active": "Active",
@@ -1333,55 +1335,86 @@ def render_today_summary(spot_state: dict, fut_state: dict):
         if active_bl:
             warnings.append(f"⛔ <b>{label}</b> blacklist: {', '.join(active_bl)}")
 
+    def _fmt_money(v):
+        sign = "+" if v >= 0 else "−"
+        return f"{sign}${abs(v):,.2f}"
+
     pnl_color = BINANCE_GREEN if total_pnl >= 0 else BINANCE_RED
-    pnl_sign = "+" if total_pnl >= 0 else ""
+    win_rate = (total_w / total_trades * 100) if total_trades > 0 else 0
+    capital_total = (spot_state.get("capital", 0) if spot_state else 0) + \
+                    (fut_state.get("capital", 0) if fut_state else 0)
+    pnl_pct = (total_pnl / capital_total * 100) if capital_total > 0 else 0
+
+    def _card(label, value, value_color="#EAECEF", subtitle=""):
+        sub_html = f'<div style="color:#5E6673;font-size:11px;margin-top:2px;">{subtitle}</div>' if subtitle else ""
+        return f"""<div style="background:#0B0E11;border:1px solid #2B3139;border-radius:8px;
+            padding:14px 16px;height:100%;">
+            <div style="color:#848E9C;font-size:10px;letter-spacing:0.5px;text-transform:uppercase;
+                font-weight:600;margin-bottom:6px;">{label}</div>
+            <div style="color:{value_color};font-size:24px;font-weight:700;line-height:1.1;">{value}</div>
+            {sub_html}
+        </div>"""
 
     if total_trades == 0:
-        body = f"""<div style="color:#848E9C;font-size:13px;padding:12px 0;">
-        {t('today_no_trades')}
+        body = f"""<div style="display:grid;grid-template-columns:1fr;gap:8px;margin-top:10px;">
+            <div style="background:#0B0E11;border:1px solid #2B3139;border-radius:8px;
+                padding:20px;text-align:center;color:#5E6673;font-size:13px;">
+                {t('today_no_trades')}
+            </div>
         </div>"""
     else:
-        breakdown_parts = []
+        # Spot card: empty if no spot trades, otherwise PnL + count
         if len(spot_trades):
-            sc = BINANCE_GREEN if spot_pnl >= 0 else BINANCE_RED
-            breakdown_parts.append(
-                f'·[spot] {len(spot_trades)} <span style="color:{sc};">{spot_pnl:+.2f}$</span>'
+            sc_color = BINANCE_GREEN if spot_pnl >= 0 else BINANCE_RED
+            spot_card = _card(
+                "·[spot]",
+                _fmt_money(spot_pnl),
+                value_color=sc_color,
+                subtitle=f"{len(spot_trades)} {t('trades_short')} · {spot_w}W / {spot_l}L",
             )
+        else:
+            spot_card = _card("·[spot]", "—", value_color="#5E6673", subtitle=f"0 {t('trades_short')}")
+
         if len(fut_trades):
-            fc = BINANCE_GREEN if fut_pnl >= 0 else BINANCE_RED
-            breakdown_parts.append(
-                f'🔥[fut] {len(fut_trades)} <span style="color:{fc};">{fut_pnl:+.2f}$</span>'
+            fc_color = BINANCE_GREEN if fut_pnl >= 0 else BINANCE_RED
+            fut_card = _card(
+                "🔥[fut]",
+                _fmt_money(fut_pnl),
+                value_color=fc_color,
+                subtitle=f"{len(fut_trades)} {t('trades_short')} · {fut_w}W / {fut_l}L",
             )
-        breakdown = " · ".join(breakdown_parts)
-        body = f"""<div style="display:flex;gap:30px;align-items:center;padding:8px 0;flex-wrap:wrap;">
-            <div>
-                <div style="color:#848E9C;font-size:11px;">{t('today_pnl')}</div>
-                <div style="color:{pnl_color};font-size:28px;font-weight:700;">{pnl_sign}${total_pnl:.2f}</div>
-            </div>
-            <div>
-                <div style="color:#848E9C;font-size:11px;">{t('today_trades')}</div>
-                <div style="color:#EAECEF;font-size:28px;font-weight:700;">{total_trades}</div>
-                <div style="color:#848E9C;font-size:11px;">
-                    <span style="color:{BINANCE_GREEN};">{total_w}W</span> /
-                    <span style="color:{BINANCE_RED};">{total_l}L</span>
-                </div>
-            </div>
-            <div style="border-left:1px solid #2B3139;padding-left:20px;color:#EAECEF;font-size:13px;">
-                {breakdown}
-            </div>
+        else:
+            fut_card = _card("🔥[fut]", "—", value_color="#5E6673", subtitle=f"0 {t('trades_short')}")
+
+        body = f"""<div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:10px;margin-top:10px;">
+            {_card(t('today_pnl'), _fmt_money(total_pnl), value_color=pnl_color,
+                   subtitle=f"{pnl_pct:+.2f}% capital")}
+            {_card(t('today_trades'), str(total_trades),
+                   subtitle=f'<span style="color:{BINANCE_GREEN}">●{total_w}W</span> '
+                            f'<span style="color:{BINANCE_RED}">●{total_l}L</span> · '
+                            f'WR {win_rate:.0f}%')}
+            {spot_card}
+            {fut_card}
         </div>"""
 
     warn_html = ""
     if warnings:
-        warn_html = f"""<div style="margin-top:8px;padding:8px 12px;background:rgba(246,70,93,0.1);
-        border-left:3px solid #F6465D;border-radius:4px;color:#EAECEF;font-size:12px;">
-        {' · '.join(warnings)}
+        warn_html = f"""<div style="margin-top:10px;padding:10px 14px;background:rgba(246,70,93,0.08);
+        border-left:3px solid #F6465D;border-radius:4px;color:#EAECEF;font-size:12px;line-height:1.6;">
+        {'<br>'.join(warnings)}
         </div>"""
 
     st.markdown(f"""
-    <div style="background:#1E2329;border-radius:10px;padding:16px 20px;margin-bottom:16px;">
-        <div style="color:#848E9C;font-size:11px;letter-spacing:1px;text-transform:uppercase;">
-            📅 {t('today_at_glance')} · {datetime.now(VN_TZ).strftime('%a %d/%m')}
+    <div style="background:#1E2329;border:1px solid #2B3139;border-radius:10px;
+        padding:14px 18px;margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div style="color:#848E9C;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;
+                font-weight:600;">
+                📅 {t('today_at_glance')}
+            </div>
+            <div style="color:#5E6673;font-size:11px;">
+                {datetime.now(VN_TZ).strftime('%A · %d/%m/%Y · %H:%M')} VN
+            </div>
         </div>
         {body}
         {warn_html}
