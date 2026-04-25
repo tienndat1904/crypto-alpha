@@ -1081,12 +1081,23 @@ def fetch_ohlcv_batch(symbols: tuple, timeframe: str = "1h", limit: int = 48) ->
 @st.cache_data(ttl=300)
 def fetch_top_movers(top_n: int = 10) -> dict:
     """Top gainers & losers across all USDT spot pairs in the last 24h.
-    Raises on failure so Streamlit doesn't cache empty results for 5min.
+    Retries once on failure. Raises if both attempts fail (Streamlit
+    won't cache the exception so the next call retries fresh).
     """
     if ccxt is None:
         return {"gainers": [], "losers": []}
-    ex = ccxt.binance({"enableRateLimit": True, "timeout": 15000})
-    tickers = ex.fetch_tickers()
+    last_err = None
+    for attempt in range(2):
+        try:
+            ex = ccxt.binance({"enableRateLimit": True, "timeout": 20000})
+            tickers = ex.fetch_tickers()
+            break
+        except Exception as e:
+            last_err = e
+            tickers = None
+    if tickers is None:
+        raise last_err or RuntimeError("fetch_tickers returned no data")
+
     rows = []
     for sym, tk in tickers.items():
         if not sym.endswith("/USDT"):
@@ -1102,6 +1113,8 @@ def fetch_top_movers(top_n: int = 10) -> dict:
             "pct_24h": pct,
             "quote_vol": quote_vol,
         })
+    if not rows:
+        raise RuntimeError("No liquid USDT pairs in ticker response")
     rows.sort(key=lambda r: r["pct_24h"], reverse=True)
     return {
         "gainers": rows[:top_n],
