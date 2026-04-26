@@ -631,6 +631,12 @@ LANG = {
         "to_tp2": "đến TP2",
         "to_stop": "đến SL",
         "held_for": "Thời gian giữ",
+        "close_pct": "Đóng {pct}%",
+        "close_all": "Đóng 100%",
+        "close_queued": "⏳ Đã queue đóng {pct}% {sym} (≤30s)",
+        "pending_n": "⏳ {n} hành động chờ — bot xử lý trong ≤30s",
+        "manual_close_section": "🔥 Đóng vị thế thủ công",
+        "progress_help": "Vị trí giá hiện tại trên thanh SL → Entry → TP1 → TP2",
         "market_watch": "Giá thị trường",
         "overview_24h": "Tổng quan 24h",
         "candlestick_chart": "Biểu đồ nến",
@@ -803,6 +809,12 @@ LANG = {
         "to_tp2": "to TP2",
         "to_stop": "to SL",
         "held_for": "Held for",
+        "close_pct": "Close {pct}%",
+        "close_all": "Close 100%",
+        "close_queued": "⏳ Queued: close {pct}% {sym} (≤30s)",
+        "pending_n": "⏳ {n} pending action(s) — bot processes within ≤30s",
+        "manual_close_section": "🔥 Manual close",
+        "progress_help": "Current price position on the SL → Entry → TP1 → TP2 strip",
         "market_watch": "Market Watch",
         "overview_24h": "24h Overview",
         "candlestick_chart": "Candlestick Chart",
@@ -2449,7 +2461,7 @@ with tab_trading:
         m3.metric(t("open_positions"), f"{open_count}/{MAX_POSITIONS}")
         m4.metric(t("total_trades"), total_trades_count)
         m5.metric(t("win_rate"), f"{win_rate:.0f}%")
-        m6.metric(t("consec_losses"), state["consecutive_losses"])
+        m6.metric(t("consec_losses"), state.get("consecutive_losses", 0))
 
         st.divider()
 
@@ -2566,18 +2578,18 @@ with tab_trading:
                         key=pct_key, label_visibility="collapsed",
                     )
                     bcol1, bcol2 = st.columns(2)
-                    if bcol1.button(f"Đóng {pct}%", key=f"spot_close_btn_{sym}", use_container_width=True):
+                    if bcol1.button(t("close_pct").format(pct=pct), key=f"spot_close_btn_{sym}", use_container_width=True):
                         manual_actions.append_close("spot", sym, pct / 100)
-                        st.success(f"⏳ Queued: đóng {pct}% {sym} (≤30s)")
+                        st.success(t("close_queued").format(pct=pct, sym=sym))
                         st.rerun()
-                    if bcol2.button("Đóng 100%", key=f"spot_close_all_{sym}",
+                    if bcol2.button(t("close_all"), key=f"spot_close_all_{sym}",
                                     use_container_width=True, type="primary"):
                         manual_actions.append_close("spot", sym, 1.0)
-                        st.success(f"⏳ Queued: đóng 100% {sym} (≤30s)")
+                        st.success(t("close_queued").format(pct=100, sym=sym))
                         st.rerun()
                     _pending = manual_actions.pending_for("spot", sym)
                     if _pending:
-                        st.caption(f"⏳ {len(_pending)} pending action(s) — bot xử lý trong ≤30s")
+                        st.caption(t("pending_n").format(n=len(_pending)))
             else:
                 st.markdown(f"""
                 <div style="background:#1E2329;border:1px solid #2B3139;border-radius:12px;
@@ -3065,7 +3077,7 @@ with tab_trading:
                         d_sl = (f_stop - f_cur) / risk_per_r if risk_per_r else 0
                         d_tp1 = (f_cur - fpos["tp1_price"]) / risk_per_r if risk_per_r else 0
                         d_tp2 = (f_cur - fpos["tp2_price"]) / risk_per_r if risk_per_r else 0
-                    st.markdown(f"**{fsym}** ({fpos['side'].upper()})", help="Vị trí giá hiện tại trên thanh SL → Entry → TP1 → TP2")
+                    st.markdown(f"**{fsym}** ({fpos['side'].upper()})", help=t("progress_help"))
                     st.markdown(
                         render_position_progress_bar(
                             entry=f_entry, current=f_cur, stop=f_stop,
@@ -3084,7 +3096,7 @@ with tab_trading:
                     )
 
                 # --- Manual close controls (one row per futures position) ---
-                st.markdown("##### 🔥 Đóng vị thế thủ công (Futures)")
+                st.markdown(f"##### {t('manual_close_section')}")
                 for fsym in list(f_open_pos.keys()):
                     fcol_lbl, fcol_pct, fcol_b1, fcol_b2 = st.columns([2, 3, 2, 2])
                     fcol_lbl.markdown(f"**{fsym}**")
@@ -3093,18 +3105,18 @@ with tab_trading:
                         f"{fsym} pct", 10, 100, 100, 5,
                         key=f_pct_key, label_visibility="collapsed",
                     )
-                    if fcol_b1.button(f"Đóng {f_pct}%", key=f"fut_close_btn_{fsym}", use_container_width=True):
+                    if fcol_b1.button(t("close_pct").format(pct=f_pct), key=f"fut_close_btn_{fsym}", use_container_width=True):
                         manual_actions.append_close("futures", fsym, f_pct / 100)
-                        st.success(f"⏳ Queued: đóng {f_pct}% {fsym} (≤30s)")
+                        st.success(t("close_queued").format(pct=f_pct, sym=fsym))
                         st.rerun()
-                    if fcol_b2.button("Đóng 100%", key=f"fut_close_all_{fsym}",
+                    if fcol_b2.button(t("close_all"), key=f"fut_close_all_{fsym}",
                                       use_container_width=True, type="primary"):
                         manual_actions.append_close("futures", fsym, 1.0)
-                        st.success(f"⏳ Queued: đóng 100% {fsym} (≤30s)")
+                        st.success(t("close_queued").format(pct=100, sym=fsym))
                         st.rerun()
                     _fpending = manual_actions.pending_for("futures", fsym)
                     if _fpending:
-                        st.caption(f"⏳ {len(_fpending)} pending action(s) — bot xử lý trong ≤30s")
+                        st.caption(t("pending_n").format(n=len(_fpending)))
 
                 # --- Charts for Futures Open Positions ---
                 st.markdown(f"""
