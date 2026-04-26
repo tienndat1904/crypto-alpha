@@ -1495,27 +1495,29 @@ def render_position_progress_bar(entry: float, current: float, stop: float,
     in_profit = (current > entry) if side == "long" else (current < entry)
     cur_color = BINANCE_GREEN if in_profit else BINANCE_RED
 
-    return f"""
-    <div style="position:relative;height:32px;background:linear-gradient(to right,
-        rgba(246,70,93,0.15) 0%, rgba(246,70,93,0.15) {entry_pct}%,
-        rgba(14,203,129,0.15) {entry_pct}%, rgba(14,203,129,0.15) 100%);
-        border-radius:4px;margin:6px 0;">
-        <div style="position:absolute;left:{sl_pct}%;top:0;height:100%;width:2px;background:#F6465D;"></div>
-        <div style="position:absolute;left:{entry_pct}%;top:0;height:100%;width:2px;background:#848E9C;"></div>
-        <div style="position:absolute;left:{tp1_pct}%;top:0;height:100%;width:2px;background:#FCD535;"></div>
-        <div style="position:absolute;left:{tp2_pct}%;top:0;height:100%;width:2px;background:#0ECB81;"></div>
-        <div style="position:absolute;left:calc({cur_pct}% - 6px);top:6px;width:12px;height:20px;
-            background:{cur_color};border-radius:3px;border:2px solid #0B0E11;
-            box-shadow:0 0 0 1px {cur_color};"></div>
-    </div>
-    <div style="display:flex;justify-content:space-between;font-size:10px;color:#848E9C;
-        margin-top:-2px;margin-bottom:6px;">
-        <span style="color:#F6465D;">SL ${stop:,.4f}</span>
-        <span>Entry ${entry:,.4f}</span>
-        <span style="color:#FCD535;">TP1 ${tp1:,.4f}</span>
-        <span style="color:#0ECB81;">TP2 ${tp2:,.4f}</span>
-    </div>
-    """
+    # Single-line HTML — multi-line indented HTML inside st.markdown gets
+    # parsed as a markdown code block, leaking the raw tags as text.
+    return (
+        f'<div style="position:relative;height:32px;background:linear-gradient(to right,'
+        f'rgba(246,70,93,0.15) 0%,rgba(246,70,93,0.15) {entry_pct}%,'
+        f'rgba(14,203,129,0.15) {entry_pct}%,rgba(14,203,129,0.15) 100%);'
+        f'border-radius:4px;margin:6px 0;">'
+        f'<div style="position:absolute;left:{sl_pct}%;top:0;height:100%;width:2px;background:#F6465D;"></div>'
+        f'<div style="position:absolute;left:{entry_pct}%;top:0;height:100%;width:2px;background:#848E9C;"></div>'
+        f'<div style="position:absolute;left:{tp1_pct}%;top:0;height:100%;width:2px;background:#FCD535;"></div>'
+        f'<div style="position:absolute;left:{tp2_pct}%;top:0;height:100%;width:2px;background:#0ECB81;"></div>'
+        f'<div style="position:absolute;left:calc({cur_pct}% - 6px);top:6px;width:12px;height:20px;'
+        f'background:{cur_color};border-radius:3px;border:2px solid #0B0E11;'
+        f'box-shadow:0 0 0 1px {cur_color};"></div>'
+        f'</div>'
+        f'<div style="display:flex;justify-content:space-between;font-size:10px;color:#848E9C;'
+        f'margin-top:-2px;margin-bottom:6px;">'
+        f'<span style="color:#F6465D;">SL ${stop:,.4f}</span>'
+        f'<span>Entry ${entry:,.4f}</span>'
+        f'<span style="color:#FCD535;">TP1 ${tp1:,.4f}</span>'
+        f'<span style="color:#0ECB81;">TP2 ${tp2:,.4f}</span>'
+        f'</div>'
+    )
 
 
 def render_sidebar(spot_state: dict, fut_state: dict):
@@ -2486,7 +2488,7 @@ with tab_trading:
                         pnl_pct = (cur_price - entry_p) / entry_p * 100
                         pnl_usd = pos.get("size_usdt", 0) * pnl_pct / 100
                         pnl_color = BINANCE_GREEN if pnl_pct >= 0 else BINANCE_RED
-                        price_html = f'<span class="pos-value">${{cur_price:,.4f}}</span>'
+                        price_html = f'<span class="pos-value">${cur_price:,.4f}</span>'
                         pnl_html = f'<span class="pos-value" style="color:{pnl_color};font-weight:700;">{pnl_pct:+.2f}% (${pnl_usd:+.2f})</span>'
                     else:
                         price_html = '<span class="pos-value" style="color:#848E9C;">--</span>'
@@ -2512,14 +2514,14 @@ with tab_trading:
                                 d_sl = (stop_p - cur_price) / risk_per_r
                                 d_tp1 = (cur_price - pos["tp1_price"]) / risk_per_r
                                 d_tp2 = (cur_price - pos["tp2_price"]) / risk_per_r
-                            distance_html = f"""
-                            <div style="display:flex;justify-content:space-between;font-size:11px;
-                                color:#848E9C;padding:4px 0;">
-                                <span>📍 {abs(d_sl):.2f}R {t('to_stop')}</span>
-                                <span>🎯 {abs(d_tp1):.2f}R {t('to_tp1')}</span>
-                                <span>🏁 {abs(d_tp2):.2f}R {t('to_tp2')}</span>
-                            </div>
-                            """
+                            distance_html = (
+                                '<div style="display:flex;justify-content:space-between;'
+                                'font-size:11px;color:#848E9C;padding:4px 0;">'
+                                f'<span>📍 {abs(d_sl):.2f}R {t("to_stop")}</span>'
+                                f'<span>🎯 {abs(d_tp1):.2f}R {t("to_tp1")}</span>'
+                                f'<span>🏁 {abs(d_tp2):.2f}R {t("to_tp2")}</span>'
+                                '</div>'
+                            )
 
                     # Time held
                     held_html = ""
@@ -2527,32 +2529,35 @@ with tab_trading:
                         try:
                             opened_dt = datetime.fromisoformat(pos["opened_at"])
                             held_h = (datetime.now(timezone.utc) - opened_dt).total_seconds() / 3600
-                            held_html = f"<span style='color:#848E9C;font-size:11px;'>⏱️ {t('held_for')} {held_h:.1f}h</span>"
+                            held_html = f'<span style="color:#848E9C;font-size:11px;">⏱️ {t("held_for")} {held_h:.1f}h</span>'
                         except Exception:
                             pass
 
-                    st.markdown(f"""
-                    <div class="pos-card">
-                        <div class="pos-header">
-                            <span class="pos-symbol">{sym}</span>
-                            <span class="pos-side {side_cls}">{side_label}</span>
-                        </div>
-                        <div class="pos-detail">
-                            <span class="pos-label">{t("current_price")}</span>
-                            {price_html}
-                        </div>
-                        <div class="pos-detail" style="background:rgba({'14,203,129' if cur_price and pnl_pct >= 0 else '246,70,93'},0.05);border-radius:4px;padding:4px 8px;margin:2px 0;">
-                            <span class="pos-label">PnL</span>
-                            {pnl_html}
-                        </div>
-                        {progress_html}
-                        {distance_html}
-                        <div style="display:flex;justify-content:space-between;font-size:11px;color:#848E9C;padding:6px 0 2px 0;border-top:1px solid #2B3139;margin-top:6px;">
-                            <span>{t("size")}: {size_str}</span>
-                            {held_html}
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    pnl_bg = "14,203,129" if cur_price and pnl_pct >= 0 else "246,70,93"
+                    card_html = (
+                        '<div class="pos-card">'
+                        f'<div class="pos-header">'
+                        f'<span class="pos-symbol">{sym}</span>'
+                        f'<span class="pos-side {side_cls}">{side_label}</span>'
+                        '</div>'
+                        f'<div class="pos-detail">'
+                        f'<span class="pos-label">{t("current_price")}</span>'
+                        f'{price_html}'
+                        '</div>'
+                        f'<div class="pos-detail" style="background:rgba({pnl_bg},0.05);'
+                        f'border-radius:4px;padding:4px 8px;margin:2px 0;">'
+                        f'<span class="pos-label">PnL</span>{pnl_html}'
+                        '</div>'
+                        f'{progress_html}'
+                        f'{distance_html}'
+                        '<div style="display:flex;justify-content:space-between;font-size:11px;'
+                        'color:#848E9C;padding:6px 0 2px 0;border-top:1px solid #2B3139;margin-top:6px;">'
+                        f'<span>{t("size")}: {size_str}</span>'
+                        f'{held_html}'
+                        '</div>'
+                        '</div>'
+                    )
+                    st.markdown(card_html, unsafe_allow_html=True)
 
                     # --- Manual close controls ---
                     pct_key = f"spot_close_pct_{sym}"
@@ -3070,12 +3075,12 @@ with tab_trading:
                         unsafe_allow_html=True,
                     )
                     st.markdown(
-                        f"""<div style="display:flex;justify-content:space-between;font-size:11px;
-                        color:#848E9C;padding:0 0 8px 0;">
-                        <span>📍 {abs(d_sl):.2f}R {t('to_stop')}</span>
-                        <span>🎯 {abs(d_tp1):.2f}R {t('to_tp1')}</span>
-                        <span>🏁 {abs(d_tp2):.2f}R {t('to_tp2')}</span>
-                        </div>""", unsafe_allow_html=True,
+                        '<div style="display:flex;justify-content:space-between;'
+                        'font-size:11px;color:#848E9C;padding:0 0 8px 0;">'
+                        f'<span>📍 {abs(d_sl):.2f}R {t("to_stop")}</span>'
+                        f'<span>🎯 {abs(d_tp1):.2f}R {t("to_tp1")}</span>'
+                        f'<span>🏁 {abs(d_tp2):.2f}R {t("to_tp2")}</span>'
+                        '</div>', unsafe_allow_html=True,
                     )
 
                 # --- Manual close controls (one row per futures position) ---
