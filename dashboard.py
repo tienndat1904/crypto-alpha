@@ -2318,15 +2318,29 @@ with tab_signals:
     with rcol2:
         if st.button("🔄", help=t("refresh_data"), key="refresh_signals"):
             fetch_live_signals.clear()
+            st.session_state.pop("_live_sigs_cache", None)
             st.rerun()
 
     st.markdown(f"#### 🎯 {t('signals_live_title')} ({t('signals_cache_hint')})")
     st.caption(t("signals_caption"))
 
-    with st.spinner(t("signals_scanning")):
-        _live_sigs = fetch_live_signals()
+    # Defer the heavy SignalGenerator scan: it costs ~10–15s on cold cache
+    # and previously ran on every page render even when this tab wasn't
+    # open. Stash result in session_state so reruns are instant.
+    _live_sigs = st.session_state.get("_live_sigs_cache")
+    _show_signals_content = _live_sigs is not None
+    if not _show_signals_content:
+        scan_col1, scan_col2 = st.columns([3, 1])
+        scan_col1.info("ℹ️ Tín hiệu chưa được quét. Bấm nút bên phải — quét mất ~10s lần đầu.")
+        if scan_col2.button("🚀 Quét tín hiệu", type="primary", key="scan_signals_btn"):
+            with st.spinner(t("signals_scanning")):
+                _live_sigs = fetch_live_signals()
+            st.session_state["_live_sigs_cache"] = _live_sigs
+            st.rerun()
 
-    if not _live_sigs:
+    if not _show_signals_content:
+        pass  # Scan button shown above; skip the rest until user opts in
+    elif not _live_sigs:
         st.warning(t("signals_no_data"))
     else:
         active = [s for s in _live_sigs if s.get("signal", 0) != 0]
@@ -2446,19 +2460,14 @@ with tab_trading:
                 <div><p class="section-title" style="font-size:16px;">{t("open_positions")}</p></div>
             </div>
             """, unsafe_allow_html=True)
-            # Fetch current prices for open positions
+            # Reuse the cached _tickers dict (WATCHED_COINS) instead of fresh
+            # per-symbol fetch_ticker calls — those were uncached and ran
+            # sequentially on every render (~0.5s × open positions).
             _spot_current_prices = {}
-            if open_pos and ccxt is not None:
-                try:
-                    _spot_ex = ccxt.binance({"enableRateLimit": True})
-                    for _sym in open_pos:
-                        try:
-                            _tk = _spot_ex.fetch_ticker(_sym)
-                            _spot_current_prices[_sym] = _tk["last"]
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+            for _sym in open_pos:
+                tk = (_tickers or {}).get(_sym)
+                if tk and tk.get("last"):
+                    _spot_current_prices[_sym] = tk["last"]
 
             if open_pos:
                 for sym, pos in open_pos.items():
@@ -2979,19 +2988,13 @@ with tab_trading:
 
             st.divider()
 
-            # --- Fetch current prices for futures positions ---
+            # Reuse the cached _tickers dict to avoid uncached per-position
+            # fetch_ticker calls on every render.
             _fut_current_prices = {}
-            if f_open_pos and ccxt is not None:
-                try:
-                    _fut_ex = ccxt.binance({"enableRateLimit": True})
-                    for _sym in f_open_pos:
-                        try:
-                            _tk = _fut_ex.fetch_ticker(_sym)
-                            _fut_current_prices[_sym] = _tk["last"]
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+            for _sym in f_open_pos:
+                tk = (_tickers or {}).get(_sym)
+                if tk and tk.get("last"):
+                    _fut_current_prices[_sym] = tk["last"]
 
             # --- Open Positions ---
             st.markdown(f"##### {t('open_positions')}")
