@@ -7,6 +7,7 @@ the Telegram /weekly command, or scheduled by the watchdog.
 
 from collections import Counter
 from datetime import datetime, timezone, timedelta
+from html import escape as _esc
 
 
 def compute_weekly_digest(state: dict, mode_label: str = "·[bot]") -> str:
@@ -93,11 +94,11 @@ def compute_weekly_digest(state: dict, mode_label: str = "·[bot]") -> str:
     lines += [
         "",
         "<b>🏆 Lệnh tốt nhất</b>",
-        f"  {best.get('symbol', '?')} {best.get('side', '').upper()} "
-        f"<code>${best.get('pnl_usd', 0):+.2f}</code> ({best.get('reason', '?')[:18]})",
+        f"  {_esc(best.get('symbol', '?'))} {_esc(best.get('side', '').upper())} "
+        f"<code>${best.get('pnl_usd', 0):+.2f}</code> ({_esc(str(best.get('reason', '?'))[:18])})",
         "<b>💀 Lệnh tệ nhất</b>",
-        f"  {worst.get('symbol', '?')} {worst.get('side', '').upper()} "
-        f"<code>${worst.get('pnl_usd', 0):+.2f}</code> ({worst.get('reason', '?')[:18]})",
+        f"  {_esc(worst.get('symbol', '?'))} {_esc(worst.get('side', '').upper())} "
+        f"<code>${worst.get('pnl_usd', 0):+.2f}</code> ({_esc(str(worst.get('reason', '?'))[:18])})",
     ]
 
     if top_sym:
@@ -105,7 +106,7 @@ def compute_weekly_digest(state: dict, mode_label: str = "·[bot]") -> str:
         lines.append("<b>📈 Top 3 coin sinh lời</b>")
         for s, p in top_sym:
             wr_s = sym_wins[s] / sym_count[s] * 100
-            lines.append(f"  {s}: <code>${p:+.2f}</code>  "
+            lines.append(f"  {_esc(s)}: <code>${p:+.2f}</code>  "
                          f"({sym_count[s]} lệnh · WR {wr_s:.0f}%)")
 
     if bot_sym and bot_sym != top_sym:
@@ -116,18 +117,18 @@ def compute_weekly_digest(state: dict, mode_label: str = "·[bot]") -> str:
             lines.append("<b>📉 Top 3 coin lỗ nhiều</b>")
             for s, p in bot_unique[:3]:
                 wr_s = sym_wins[s] / sym_count[s] * 100
-                lines.append(f"  {s}: <code>${p:+.2f}</code>  "
+                lines.append(f"  {_esc(s)}: <code>${p:+.2f}</code>  "
                              f"({sym_count[s]} lệnh · WR {wr_s:.0f}%)")
 
     lines.append("")
     lines.append("<b>🎯 Theo strategy</b>")
     for s, p in strats_sorted:
-        lines.append(f"  {s}: <code>${p:+.2f}</code> ({strat_count[s]} lệnh)")
+        lines.append(f"  {_esc(str(s))}: <code>${p:+.2f}</code> ({strat_count[s]} lệnh)")
 
     lines.append("")
     lines.append("<b>🚪 Lý do thoát</b>")
     for r, c in exit_reasons.most_common():
-        lines.append(f"  {r}: <code>{c}</code>")
+        lines.append(f"  {_esc(str(r))}: <code>{c}</code>")
 
     # Insights — auto-generated observations
     insights = []
@@ -136,7 +137,7 @@ def compute_weekly_digest(state: dict, mode_label: str = "·[bot]") -> str:
     if wr < 40 and rr and rr > 2:
         insights.append("✅ WR thấp nhưng R:R cao → strategy trend-following, ổn.")
     if profit_factor is not None and profit_factor < 1:
-        insights.append("🚨 Profit factor < 1 → tuần này thua nhiều hơn thắng. Review strategy.")
+        insights.append("🚨 Profit factor &lt; 1 → tuần này thua nhiều hơn thắng. Review strategy.")
     if losses and len(losses) >= 4:
         # Check loss clustering
         recent_5 = week_trades[-5:]
