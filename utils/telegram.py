@@ -706,11 +706,32 @@ class TelegramAlert:
         # tell two parallel replies apart at a glance.
         return "🟢 SPOT" if self.mode == "spot" else "🔥 FUTURES"
 
+    @staticmethod
+    def _label_for(mode: str) -> str:
+        return "🟢 SPOT" if mode == "spot" else "🔥 FUTURES"
+
     def _reply(self, msg: str) -> bool:
         """Send a command reply with mode-based notification priority.
         Spot replies are silent; futures replies notify so the user's
         attention is drawn to the higher-leverage account."""
         return self.send(msg, silent=(self.mode == "spot"))
+
+    @staticmethod
+    def _load_state(mode: str) -> dict:
+        """Read either spot or futures state.json from disk. Used by the
+        single-listener bot (spot) to also reply on behalf of futures —
+        Telegram's getUpdates only delivers each message to one poller, so
+        we centralise dispatch here instead of running two listeners."""
+        import json
+        from pathlib import Path
+        path = Path("trading/state.json" if mode == "spot" else "trading/futures_state.json")
+        if not path.exists():
+            return {}
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
 
     def _cmd_pause(self, args: list):
         """/pause <spot|fut|both> [hours]   default hours=4"""
@@ -777,48 +798,52 @@ class TelegramAlert:
                   f"(bot xử lý trong ≤30s)")
 
     def _cmd_today(self):
-        """/today — today's trades + PnL for this bot's mode."""
-        state = self._state_getter() if self._state_getter else {}
-        if not state:
-            return
-        from datetime import date
-        today_utc = datetime.now(timezone.utc).date()
-        today_trades = []
-        for tr in state.get("trade_history", []):
-            ca = tr.get("closed_at")
-            if not ca:
+        """/today — today's trades for BOTH modes. Futures sent first (notify),
+        spot sent second (silent). Telegram only delivers each command to one
+        polling bot, so we read both state files from disk and reply for both
+        regardless of which bot received the message."""
+        # Send futures first so the loud ping is the high-leverage account.
+        for mode in ("futures", "spot"):
+            state = self._load_state(mode)
+            label = self._label_for(mode)
+            silent = (mode == "spot")
+            if not state:
+                self.send(f"📅 <b>{label} HÔM NAY</b>\n(không tải được state)", silent=silent)
                 continue
-            try:
-                if datetime.fromisoformat(ca).date() == today_utc:
-                    today_trades.append(tr)
-            except Exception:
+            today_utc = datetime.now(timezone.utc).date()
+            today_trades = []
+            for tr in state.get("trade_history", []):
+                ca = tr.get("closed_at")
+                if not ca:
+                    continue
+                try:
+                    if datetime.fromisoformat(ca).date() == today_utc:
+                        today_trades.append(tr)
+                except Exception:
+                    continue
+            if not today_trades:
+                self.send(f"📅 <b>{label} HÔM NAY</b>\nChưa có lệnh nào.", silent=silent)
                 continue
-
-        if not today_trades:
-            self._reply(f"📅 <b>{self._mode_label()} HÔM NAY</b>\nChưa có lệnh nào.")
-            return
-
-        wins = sum(1 for t in today_trades if t.get("pnl_usd", 0) > 0)
-        losses = len(today_trades) - wins
-        total_pnl = sum(t.get("pnl_usd", 0) for t in today_trades)
-        wr = wins / len(today_trades) * 100
-
-        msg = (
-            f"📅 <b>{self._mode_label()} HÔM NAY</b>\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"Lệnh: <code>{len(today_trades)}</code>  "
-            f"({wins}W / {losses}L · WR <code>{wr:.0f}%</code>)\n"
-            f"PnL: <code>${total_pnl:+.2f}</code>\n"
-            f"\n<b>Chi tiết:</b>\n"
-        )
-        for tr in today_trades[-10:]:
-            sym = tr.get("symbol", "")
-            side = tr.get("side", "").upper()
-            pnl = tr.get("pnl_usd", 0)
-            reason = tr.get("reason", "")[:20]
-            emoji = "✅" if pnl > 0 else "❌"
-            msg += f"{emoji} {side} {sym} <code>${pnl:+.2f}</code> · {reason}\n"
-        self._reply(msg)
+            wins = sum(1 for t in today_trades if t.get("pnl_usd", 0) > 0)
+            losses = len(today_trades) - wins
+            total_pnl = sum(t.get("pnl_usd", 0) for t in today_trades)
+            wr = wins / len(today_trades) * 100
+            msg = (
+                f"📅 <b>{label} HÔM NAY</b>\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"Lệnh: <code>{len(today_trades)}</code>  "
+                f"({wins}W / {losses}L · WR <code>{wr:.0f}%</code>)\n"
+                f"PnL: <code>${total_pnl:+.2f}</code>\n"
+                f"\n<b>Chi tiết:</b>\n"
+            )
+            for tr in today_trades[-10:]:
+                sym = tr.get("symbol", "")
+                side = tr.get("side", "").upper()
+                pnl = tr.get("pnl_usd", 0)
+                reason = tr.get("reason", "")[:20]
+                emoji = "✅" if pnl > 0 else "❌"
+                msg += f"{emoji} {side} {sym} <code>${pnl:+.2f}</code> · {reason}\n"
+            self.send(msg, silent=silent)
 
     def _cmd_blacklist(self):
         """/blacklist — show currently blacklisted symbols for this mode."""
@@ -840,14 +865,20 @@ class TelegramAlert:
             self._reply(f"⛔ <b>{self._mode_label()} BLACKLIST</b>\n" + "\n".join(active))
 
     def _cmd_weekly(self):
-        """/weekly — stat-based weekly digest for this mode."""
-        state = self._state_getter() if self._state_getter else {}
-        if not state:
-            return
-        try:
-            from utils.weekly_digest import compute_weekly_digest
-            msg = compute_weekly_digest(state, mode_label=self._mode_label())
-            self._reply(msg)
-        except Exception as e:
-            logger.error(f"Weekly digest failed: {e}")
-            self._reply(f"⚠️ Weekly digest error: {e}")
+        """/weekly — digest for BOTH modes. Futures first (notify), spot
+        second (silent). Centralised here because Telegram delivers each
+        command to only one polling bot."""
+        from utils.weekly_digest import compute_weekly_digest
+        for mode in ("futures", "spot"):
+            state = self._load_state(mode)
+            label = self._label_for(mode)
+            silent = (mode == "spot")
+            if not state:
+                self.send(f"📅 <b>{label} WEEKLY</b>\n(không tải được state)", silent=silent)
+                continue
+            try:
+                msg = compute_weekly_digest(state, mode_label=label)
+                self.send(msg, silent=silent)
+            except Exception as e:
+                logger.error(f"Weekly digest failed for {mode}: {e}")
+                self.send(f"⚠️ {label} digest error: {e}", silent=silent)
