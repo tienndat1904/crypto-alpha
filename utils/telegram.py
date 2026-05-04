@@ -265,7 +265,8 @@ class TelegramAlert:
 
         self.send(msg)
 
-    def send_daily_report(self, state: dict, prices: dict = None):
+    def send_daily_report(self, state: dict, prices: dict = None,
+                          mode_label: str = None, silent: bool = None):
         """Send full daily portfolio report with HTML formatting."""
         capital = state.get("capital", 0)
         peak = state.get("peak_capital", capital)
@@ -285,8 +286,9 @@ class TelegramAlert:
 
         timestamp = datetime.now(VN_TZ).strftime("%Y-%m-%d %H:%M:%S (VN)")
 
+        label = mode_label if mode_label is not None else self._mode_label()
         msg = (
-            f"📋 <b>{self._mode_label()} BÁO CÁO HÀNG NGÀY</b>\n"
+            f"📋 <b>{label} BÁO CÁO HÀNG NGÀY</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🕐 {timestamp}\n\n"
             f"💰 <b>Tài khoản:</b>\n"
@@ -323,8 +325,11 @@ class TelegramAlert:
             msg += "\n📂 <b>Không có vị thế đang mở</b>\n"
 
         # Spot daily report silent, futures notify — keeps user focus on the
-        # higher-leverage account.
-        self._reply(msg)
+        # higher-leverage account. `silent` overrides if explicitly passed
+        # (e.g. when /report dispatches both modes from one bot).
+        if silent is None:
+            silent = (self.mode == "spot")
+        self.send(msg, silent=silent)
 
     def send_bot_started(self, coins: list, strategies: list = None):
         """Send bot started notification with timestamp and details."""
@@ -483,207 +488,221 @@ class TelegramAlert:
                 return
             self._reply(f"❓ Unknown command: <code>{cmd}</code>\nType /help for the list.")
 
+    # Read commands all dispatch for both modes (futures first, notify;
+    # spot second, silent). Telegram delivers each command to one polling
+    # bot, so we centralise here and read both state files from disk.
+
     def _cmd_status(self):
-        """Handle /status command."""
-        state = self._state_getter() if self._state_getter else {}
-        if not state:
-            self._reply("⚠️ Không có dữ liệu trạng thái.")
-            return
-
-        capital = state.get("capital", 0)
-        peak = state.get("peak_capital", capital)
-        total_trades = state.get("total_trades", 0)
-        total_wins = state.get("total_wins", 0)
-        total_pnl = state.get("total_pnl", 0)
-        open_positions = state.get("open_positions", {})
-
-        total_equity = capital
-        for pos in open_positions.values():
-            total_equity += _position_value(pos)
-
-        drawdown = (total_equity - peak) / peak if peak > 0 else 0
-        win_rate = total_wins / total_trades * 100 if total_trades > 0 else 0
-        pos_count = len(open_positions)
-
-        msg = (
-            f"📊 <b>Trạng thái Bot</b>\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"Equity: <code>${total_equity:,.2f}</code>\n"
-            f"Drawdown: <code>{drawdown:.2%}</code>\n"
-            f"Vị thế mở: {pos_count}\n"
-            f"Tổng giao dịch: {total_trades}\n"
-            f"Win rate: <code>{win_rate:.1f}%</code>\n"
-            f"PnL: <code>${total_pnl:+,.2f}</code>\n"
-        )
-        self._reply(msg)
+        for mode in ("futures", "spot"):
+            state = self._load_state(mode)
+            label = self._label_for(mode)
+            silent = (mode == "spot")
+            if not state:
+                self.send(f"📊 <b>{label}</b>\n⚠️ Không có dữ liệu.", silent=silent)
+                continue
+            capital = state.get("capital", 0)
+            peak = state.get("peak_capital", capital)
+            total_trades = state.get("total_trades", 0)
+            total_wins = state.get("total_wins", 0)
+            total_pnl = state.get("total_pnl", 0)
+            open_positions = state.get("open_positions", {})
+            total_equity = capital
+            for pos in open_positions.values():
+                total_equity += _position_value(pos)
+            drawdown = (total_equity - peak) / peak if peak > 0 else 0
+            win_rate = total_wins / total_trades * 100 if total_trades > 0 else 0
+            msg = (
+                f"📊 <b>{label} — Trạng thái</b>\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"Equity: <code>${total_equity:,.2f}</code>\n"
+                f"Drawdown: <code>{drawdown:.2%}</code>\n"
+                f"Vị thế mở: {len(open_positions)}\n"
+                f"Tổng giao dịch: {total_trades}\n"
+                f"Win rate: <code>{win_rate:.1f}%</code>\n"
+                f"PnL: <code>${total_pnl:+,.2f}</code>\n"
+            )
+            self.send(msg, silent=silent)
 
     def _cmd_balance(self):
-        """Handle /balance command."""
-        state = self._state_getter() if self._state_getter else {}
-        if not state:
-            self._reply("⚠️ Không có dữ liệu trạng thái.")
-            return
-
-        capital = state.get("capital", 0)
-        peak = state.get("peak_capital", capital)
-        initial = state.get("initial_capital", capital)
-        total_pnl = state.get("total_pnl", 0)
-        open_positions = state.get("open_positions", {})
-
-        total_equity = capital
-        in_positions = 0.0
-        for pos in open_positions.values():
-            value = _position_value(pos)
-            total_equity += value
-            in_positions += value
-
-        drawdown = (total_equity - peak) / peak if peak > 0 else 0
-        roi = (total_equity - initial) / initial * 100 if initial > 0 else 0
-
-        msg = (
-            f"💰 <b>Số dư tài khoản</b>\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"Vốn ban đầu: <code>${initial:,.2f}</code>\n"
-            f"Equity hiện tại: <code>${total_equity:,.2f}</code>\n"
-            f"Cash khả dụng: <code>${capital:,.2f}</code>\n"
-            f"Đang trong vị thế: <code>${in_positions:,.2f}</code>\n"
-            f"Peak equity: <code>${peak:,.2f}</code>\n"
-            f"Drawdown: <code>{drawdown:.2%}</code>\n"
-            f"ROI: <code>{roi:+.2f}%</code>\n"
-            f"Tổng PnL: <code>${total_pnl:+,.2f}</code>\n"
-        )
-        self._reply(msg)
+        for mode in ("futures", "spot"):
+            state = self._load_state(mode)
+            label = self._label_for(mode)
+            silent = (mode == "spot")
+            if not state:
+                self.send(f"💰 <b>{label}</b>\n⚠️ Không có dữ liệu.", silent=silent)
+                continue
+            capital = state.get("capital", 0)
+            peak = state.get("peak_capital", capital)
+            initial = state.get("initial_capital", capital)
+            total_pnl = state.get("total_pnl", 0)
+            open_positions = state.get("open_positions", {})
+            total_equity = capital
+            in_positions = 0.0
+            for pos in open_positions.values():
+                value = _position_value(pos)
+                total_equity += value
+                in_positions += value
+            drawdown = (total_equity - peak) / peak if peak > 0 else 0
+            roi = (total_equity - initial) / initial * 100 if initial > 0 else 0
+            msg = (
+                f"💰 <b>{label} — Số dư</b>\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"Vốn ban đầu: <code>${initial:,.2f}</code>\n"
+                f"Equity hiện tại: <code>${total_equity:,.2f}</code>\n"
+                f"Cash khả dụng: <code>${capital:,.2f}</code>\n"
+                f"Đang trong vị thế: <code>${in_positions:,.2f}</code>\n"
+                f"Peak equity: <code>${peak:,.2f}</code>\n"
+                f"Drawdown: <code>{drawdown:.2%}</code>\n"
+                f"ROI: <code>{roi:+.2f}%</code>\n"
+                f"Tổng PnL: <code>${total_pnl:+,.2f}</code>\n"
+            )
+            self.send(msg, silent=silent)
 
     def _cmd_positions(self):
-        """Handle /positions command."""
-        state = self._state_getter() if self._state_getter else {}
-        prices = self._price_getter() if self._price_getter else {}
+        # Fetch live prices once for all open symbols across both modes
+        all_symbols = set()
+        states = {}
+        for mode in ("futures", "spot"):
+            states[mode] = self._load_state(mode)
+            all_symbols.update(states[mode].get("open_positions", {}).keys())
 
-        open_positions = state.get("open_positions", {})
-        if not open_positions:
-            self._reply("📂 <b>Không có vị thế đang mở</b>")
-            return
+        prices = {}
+        if all_symbols:
+            try:
+                import ccxt
+                ex = ccxt.binance({"enableRateLimit": True, "timeout": 10000})
+                tickers = ex.fetch_tickers(list(all_symbols))
+                prices = {s: t.get("last") for s, t in tickers.items() if t.get("last")}
+            except Exception:
+                pass
 
-        msg = f"📂 <b>Vị thế đang mở ({len(open_positions)})</b>\n━━━━━━━━━━━━━━━━\n"
-
-        for sym, pos in open_positions.items():
-            side = pos.get("side", "long")
-            side_upper = side.upper()
-            entry = pos.get("entry_price", 0)
-            size = pos.get("size_usdt", 0)
-            stop_price = pos.get("stop_price", 0)
-            tp1 = pos.get("tp1_price", 0)
-            tp2 = pos.get("tp2_price", 0)
-            tp1_hit = pos.get("tp1_hit", False)
-            emoji = "🟢" if side == "long" else "🔴"
-
-            # Compute unrealized PnL
-            upnl_str = "N/A"
-            if prices and sym in prices and entry > 0:
-                current = prices[sym]
-                if side == "long":
-                    unrealized = (current - entry) / entry * size
-                else:
-                    unrealized = (entry - current) / entry * size
-                upnl_str = f"${unrealized:+,.2f}"
-
-            tp_status = "TP1 hit ✓" if tp1_hit else f"TP1: ${tp1:,.4f}"
-
-            msg += (
-                f"\n{emoji} <b>{side_upper} {sym}</b>\n"
-                f"  Entry: <code>${entry:,.4f}</code>\n"
-                f"  Size: <code>${size:.2f}</code>\n"
-                f"  SL: <code>${stop_price:,.4f}</code>\n"
-                f"  {tp_status} | TP2: <code>${tp2:,.4f}</code>\n"
-                f"  uPnL: <code>{upnl_str}</code>\n"
-            )
-
-        self._reply(msg)
+        for mode in ("futures", "spot"):
+            state = states[mode]
+            label = self._label_for(mode)
+            silent = (mode == "spot")
+            open_positions = state.get("open_positions", {})
+            if not open_positions:
+                self.send(f"📂 <b>{label}</b> — không có vị thế mở", silent=silent)
+                continue
+            msg = f"📂 <b>{label} — Vị thế ({len(open_positions)})</b>\n━━━━━━━━━━━━━━━━\n"
+            for sym, pos in open_positions.items():
+                side = pos.get("side", "long")
+                entry = pos.get("entry_price", 0)
+                size = pos.get("size_usdt", 0)
+                stop_price = pos.get("stop_price", 0)
+                tp1 = pos.get("tp1_price", 0)
+                tp2 = pos.get("tp2_price", 0)
+                tp1_hit = pos.get("tp1_hit", False)
+                emoji = "🟢" if side == "long" else "🔴"
+                upnl_str = "N/A"
+                cur = prices.get(sym)
+                if cur and entry > 0:
+                    if side == "long":
+                        unrealized = (cur - entry) / entry * size
+                    else:
+                        unrealized = (entry - cur) / entry * size
+                    upnl_str = f"${unrealized:+,.2f}"
+                tp_status = "TP1 hit ✓" if tp1_hit else f"TP1: ${tp1:,.4f}"
+                msg += (
+                    f"\n{emoji} <b>{side.upper()} {sym}</b>\n"
+                    f"  Entry: <code>${entry:,.4f}</code>\n"
+                    f"  Size: <code>${size:.2f}</code>\n"
+                    f"  SL: <code>${stop_price:,.4f}</code>\n"
+                    f"  {tp_status} | TP2: <code>${tp2:,.4f}</code>\n"
+                    f"  uPnL: <code>{upnl_str}</code>\n"
+                )
+            self.send(msg, silent=silent)
 
     def _cmd_history(self):
-        """Handle /history command - show last 10 trades."""
-        state = self._state_getter() if self._state_getter else {}
-        trade_log = state.get("trade_history", [])
-
-        if not trade_log:
-            self._reply("📜 <b>Chưa có giao dịch nào</b>")
-            return
-
-        last_10 = trade_log[-10:]
-        msg = f"📜 <b>10 giao dịch gần nhất</b>\n━━━━━━━━━━━━━━━━\n"
-
-        for t in reversed(last_10):
-            sym = t.get("symbol", "?")
-            side = t.get("side", "?").upper()
-            pnl = t.get("pnl_usd", 0)
-            pnl_pct = t.get("pnl_pct", 0)
-            reason = t.get("reason", "")
-            emoji = "✅" if pnl >= 0 else "❌"
-            reason_str = f" ({reason})" if reason else ""
-
-            msg += f"{emoji} {side} {sym}: <code>${pnl:+,.2f}</code> ({pnl_pct:+.2f}%){reason_str}\n"
-
-        self._reply(msg)
+        for mode in ("futures", "spot"):
+            state = self._load_state(mode)
+            label = self._label_for(mode)
+            silent = (mode == "spot")
+            trade_log = state.get("trade_history", [])
+            if not trade_log:
+                self.send(f"📜 <b>{label}</b> — chưa có giao dịch", silent=silent)
+                continue
+            last_10 = trade_log[-10:]
+            msg = f"📜 <b>{label} — 10 giao dịch gần nhất</b>\n━━━━━━━━━━━━━━━━\n"
+            for tr in reversed(last_10):
+                sym = tr.get("symbol", "?")
+                side = tr.get("side", "?").upper()
+                pnl = tr.get("pnl_usd", 0)
+                pnl_pct = tr.get("pnl_pct", 0)
+                reason = tr.get("reason", "")
+                emoji = "✅" if pnl >= 0 else "❌"
+                reason_str = f" ({reason})" if reason else ""
+                msg += f"{emoji} {side} {sym}: <code>${pnl:+,.2f}</code> ({pnl_pct:+.2f}%){reason_str}\n"
+            self.send(msg, silent=silent)
 
     def _cmd_pnl(self):
-        """Handle /pnl command - PnL analysis."""
-        state = self._state_getter() if self._state_getter else {}
-        total_trades = state.get("total_trades", 0)
-        total_wins = state.get("total_wins", 0)
-        total_pnl = state.get("total_pnl", 0)
-        trade_log = state.get("trade_history", [])
-
-        if total_trades == 0:
-            self._reply("📈 <b>Chưa có dữ liệu PnL</b>")
-            return
-
-        loss_count = total_trades - total_wins
-        win_rate = total_wins / total_trades * 100
-
-        # Compute average win/loss from trade log
-        wins = [t.get("pnl_usd", 0) for t in trade_log if t.get("pnl_usd", 0) > 0]
-        losses = [t.get("pnl_usd", 0) for t in trade_log if t.get("pnl_usd", 0) < 0]
-
-        avg_win = sum(wins) / len(wins) if wins else 0
-        avg_loss = sum(losses) / len(losses) if losses else 0
-        largest_win = max(wins) if wins else 0
-        largest_loss = min(losses) if losses else 0
-        profit_factor_str = "N/A"
-        if losses:
-            total_loss_abs = abs(sum(losses))
-            if total_loss_abs > 0:
-                profit_factor = sum(wins) / total_loss_abs if wins else 0
-                profit_factor_str = f"{profit_factor:.2f}"
-
-        avg_pnl = total_pnl / total_trades if total_trades > 0 else 0
-
-        msg = (
-            f"📈 <b>Phân tích PnL</b>\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"Tổng giao dịch: {total_trades}\n"
-            f"Thắng: {total_wins} | Thua: {loss_count}\n"
-            f"Win rate: <code>{win_rate:.1f}%</code>\n"
-            f"Tổng PnL: <code>${total_pnl:+,.2f}</code>\n"
-            f"PnL TB/lệnh: <code>${avg_pnl:+,.2f}</code>\n\n"
-            f"<b>Chi tiết:</b>\n"
-            f"  TB thắng: <code>${avg_win:+,.2f}</code>\n"
-            f"  TB thua: <code>${avg_loss:+,.2f}</code>\n"
-            f"  Lớn nhất thắng: <code>${largest_win:+,.2f}</code>\n"
-            f"  Lớn nhất thua: <code>${largest_loss:+,.2f}</code>\n"
-            f"  Profit factor: <code>{profit_factor_str}</code>\n"
-        )
-        self._reply(msg)
+        for mode in ("futures", "spot"):
+            state = self._load_state(mode)
+            label = self._label_for(mode)
+            silent = (mode == "spot")
+            total_trades = state.get("total_trades", 0)
+            total_wins = state.get("total_wins", 0)
+            total_pnl = state.get("total_pnl", 0)
+            trade_log = state.get("trade_history", [])
+            if total_trades == 0:
+                self.send(f"📈 <b>{label}</b> — chưa có dữ liệu PnL", silent=silent)
+                continue
+            loss_count = total_trades - total_wins
+            win_rate = total_wins / total_trades * 100
+            wins = [t.get("pnl_usd", 0) for t in trade_log if t.get("pnl_usd", 0) > 0]
+            losses = [t.get("pnl_usd", 0) for t in trade_log if t.get("pnl_usd", 0) < 0]
+            avg_win = sum(wins) / len(wins) if wins else 0
+            avg_loss = sum(losses) / len(losses) if losses else 0
+            largest_win = max(wins) if wins else 0
+            largest_loss = min(losses) if losses else 0
+            profit_factor_str = "N/A"
+            if losses:
+                total_loss_abs = abs(sum(losses))
+                if total_loss_abs > 0:
+                    profit_factor = sum(wins) / total_loss_abs if wins else 0
+                    profit_factor_str = f"{profit_factor:.2f}"
+            avg_pnl = total_pnl / total_trades if total_trades > 0 else 0
+            msg = (
+                f"📈 <b>{label} — Phân tích PnL</b>\n"
+                f"━━━━━━━━━━━━━━━━\n"
+                f"Tổng giao dịch: {total_trades}\n"
+                f"Thắng: {total_wins} | Thua: {loss_count}\n"
+                f"Win rate: <code>{win_rate:.1f}%</code>\n"
+                f"Tổng PnL: <code>${total_pnl:+,.2f}</code>\n"
+                f"PnL TB/lệnh: <code>${avg_pnl:+,.2f}</code>\n\n"
+                f"<b>Chi tiết:</b>\n"
+                f"  TB thắng: <code>${avg_win:+,.2f}</code>\n"
+                f"  TB thua: <code>${avg_loss:+,.2f}</code>\n"
+                f"  Lớn nhất thắng: <code>${largest_win:+,.2f}</code>\n"
+                f"  Lớn nhất thua: <code>${largest_loss:+,.2f}</code>\n"
+                f"  Profit factor: <code>{profit_factor_str}</code>\n"
+            )
+            self.send(msg, silent=silent)
 
     def _cmd_report(self):
-        """Handle /report command."""
-        state = self._state_getter() if self._state_getter else {}
-        prices = self._price_getter() if self._price_getter else {}
-
-        if not state:
-            self._reply("⚠️ Không có dữ liệu để tạo báo cáo.")
-            return
-
-        self.send_daily_report(state, prices)
+        # Build prices once for both modes' open positions
+        all_symbols = set()
+        states = {}
+        for mode in ("futures", "spot"):
+            states[mode] = self._load_state(mode)
+            all_symbols.update(states[mode].get("open_positions", {}).keys())
+        prices = {}
+        if all_symbols:
+            try:
+                import ccxt
+                ex = ccxt.binance({"enableRateLimit": True, "timeout": 10000})
+                tickers = ex.fetch_tickers(list(all_symbols))
+                prices = {s: t.get("last") for s, t in tickers.items() if t.get("last")}
+            except Exception:
+                pass
+        for mode in ("futures", "spot"):
+            state = states[mode]
+            label = self._label_for(mode)
+            silent = (mode == "spot")
+            if not state:
+                self.send(f"📋 <b>{label}</b> — không tải được state", silent=silent)
+                continue
+            self.send_daily_report(state, prices, mode_label=label, silent=silent)
 
     # ── Action commands (mode-aware) ──
 
@@ -846,23 +865,25 @@ class TelegramAlert:
             self.send(msg, silent=silent)
 
     def _cmd_blacklist(self):
-        """/blacklist — show currently blacklisted symbols for this mode."""
-        state = self._state_getter() if self._state_getter else {}
-        bl = state.get("symbol_blacklist", {})
-        now = datetime.now(timezone.utc)
-        active = []
-        for sym, until in bl.items():
-            try:
-                until_ts = datetime.fromisoformat(until)
-                if until_ts > now:
-                    hrs = (until_ts - now).total_seconds() / 3600
-                    active.append(f"  • <b>{sym}</b> — {hrs:.1f}h còn lại")
-            except Exception:
-                pass
-        if not active:
-            self._reply(f"✅ <b>{self._mode_label()}</b> Không coin nào bị blacklist.")
-        else:
-            self._reply(f"⛔ <b>{self._mode_label()} BLACKLIST</b>\n" + "\n".join(active))
+        for mode in ("futures", "spot"):
+            state = self._load_state(mode)
+            label = self._label_for(mode)
+            silent = (mode == "spot")
+            bl = state.get("symbol_blacklist", {})
+            now = datetime.now(timezone.utc)
+            active = []
+            for sym, until in bl.items():
+                try:
+                    until_ts = datetime.fromisoformat(until)
+                    if until_ts > now:
+                        hrs = (until_ts - now).total_seconds() / 3600
+                        active.append(f"  • <b>{sym}</b> — {hrs:.1f}h còn lại")
+                except Exception:
+                    pass
+            if not active:
+                self.send(f"✅ <b>{label}</b> — không coin nào bị blacklist.", silent=silent)
+            else:
+                self.send(f"⛔ <b>{label} BLACKLIST</b>\n" + "\n".join(active), silent=silent)
 
     def _cmd_weekly(self):
         """/weekly — digest for BOTH modes. Futures first (notify), spot
