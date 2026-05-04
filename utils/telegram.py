@@ -700,7 +700,9 @@ class TelegramAlert:
         return False
 
     def _mode_label(self) -> str:
-        return "·[spot]" if self.mode == "spot" else "🔥[fut]"
+        # Big visual distinction between spot and futures so the user can
+        # tell two parallel replies apart at a glance.
+        return "🟢 SPOT" if self.mode == "spot" else "🔥 FUTURES"
 
     def _cmd_pause(self, args: list):
         """/pause <spot|fut|both> [hours]   default hours=4"""
