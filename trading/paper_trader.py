@@ -135,7 +135,7 @@ class PaperTrader:
                 self.risk_mgr.state["paused_until"] = until.isoformat()
                 self.risk_mgr._save_state()
                 logger.info(f"Manual pause: spot paused for {hours}h")
-                self.tg.send(f"⏸️ <b>·[spot] PAUSED</b> {hours}h từ dashboard")
+                self.tg.send(f"⏸️ <b>🟢 SPOT PAUSED</b> {hours}h từ dashboard")
                 continue
 
             if atype == "resume":
@@ -143,7 +143,7 @@ class PaperTrader:
                 self.risk_mgr.state["consecutive_losses"] = 0
                 self.risk_mgr._save_state()
                 logger.info("Manual resume: spot resumed")
-                self.tg.send("▶️ <b>·[spot] RESUMED</b> từ dashboard")
+                self.tg.send("▶️ <b>🟢 SPOT RESUMED</b> từ dashboard")
                 continue
 
             if atype != "close":
@@ -166,7 +166,7 @@ class PaperTrader:
                 trade = self.risk_mgr._partial_close(symbol, pct, price, "manual_close")
             if trade:
                 self.tg.send(
-                    f"👤 <b>·[spot] MANUAL CLOSE {symbol} ({pct*100:.0f}%)</b>\n"
+                    f"👤 <b>🟢 SPOT MANUAL CLOSE {symbol} ({pct*100:.0f}%)</b>\n"
                     f"PnL: <code>{trade['pnl_pct']:+.2f}%</code> "
                     f"(<code>${trade['pnl_usd']:+.2f}</code>)"
                 )
@@ -182,7 +182,7 @@ class PaperTrader:
         if not can_trade:
             logger.warning(f"Trading blocked: {reason}")
             print(f"\n[BLOCKED] Trading blocked: {reason}")
-            self.tg.send(f"⛔ <b>·[spot] Trading blocked</b>\n{reason}")
+            self.tg.send(f"⛔ <b>🟢 SPOT Trading blocked</b>\n{reason}")
             return
 
         # ── Step 2: Check stop-losses on open positions ──
@@ -425,7 +425,7 @@ class PaperTrader:
                     print(f"\n[ERROR] {e}. Retrying in 60s...")
                     if consecutive_errors >= 5:
                         self.tg.send(
-                            f"🚨 <b>·[spot] Bot alert</b>\n"
+                            f"🚨 <b>🟢 SPOT Bot alert</b>\n"
                             f"{consecutive_errors} consecutive errors!\n"
                             f"Last: {e}"
                         )
@@ -439,7 +439,7 @@ class PaperTrader:
             logger.critical(f"Bot crashed: {e}")
             if self.price_monitor:
                 self.price_monitor.stop()
-            self.tg.send(f"💀 <b>·[spot] Bot CRASHED</b>\n{e}")
+            self.tg.send(f"💀 <b>🟢 SPOT Bot CRASHED</b>\n{e}")
             raise
 
     def show_status(self):

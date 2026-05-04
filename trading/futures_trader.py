@@ -431,7 +431,7 @@ class FuturesPaperTrader:
                 self.risk_mgr.state["paused_until"] = until.isoformat()
                 self.risk_mgr._save_state()
                 logger.info(f"Manual pause: futures paused for {hours}h")
-                self.tg.send(f"⏸️ <b>🔥[FUT] PAUSED</b> {hours}h từ dashboard")
+                self.tg.send(f"⏸️ <b>🔥 FUTURES PAUSED</b> {hours}h từ dashboard")
                 continue
 
             if atype == "resume":
@@ -439,7 +439,7 @@ class FuturesPaperTrader:
                 self.risk_mgr.state["consecutive_losses"] = 0
                 self.risk_mgr._save_state()
                 logger.info("Manual resume: futures resumed")
-                self.tg.send("▶️ <b>🔥[FUT] RESUMED</b> từ dashboard")
+                self.tg.send("▶️ <b>🔥 FUTURES RESUMED</b> từ dashboard")
                 continue
 
             if atype != "close":
@@ -463,7 +463,7 @@ class FuturesPaperTrader:
             if trade:
                 roe = trade.get("roe", 0)
                 self.tg.send(
-                    f"👤 <b>🔥[FUT] MANUAL CLOSE {symbol} ({pct*100:.0f}%)</b>\n"
+                    f"👤 <b>🔥 FUTURES MANUAL CLOSE {symbol} ({pct*100:.0f}%)</b>\n"
                     f"PnL: <code>{trade['pnl_pct']:+.2f}%</code> "
                     f"(ROE: <code>{roe:+.1f}%</code>)\n"
                     f"(<code>${trade['pnl_usd']:+.2f}</code>)"
@@ -477,7 +477,7 @@ class FuturesPaperTrader:
         can_trade, reason = self.risk_mgr.can_trade()
         if not can_trade:
             logger.warning(f"Trading blocked: {reason}")
-            self.tg.send(f"⛔ <b>🔥[FUT] Trading blocked</b>\n{reason}")
+            self.tg.send(f"⛔ <b>🔥 FUTURES Trading blocked</b>\n{reason}")
             return
 
         # Check stops + take-profits
@@ -495,21 +495,21 @@ class FuturesPaperTrader:
             roe = trade.get("roe", 0)
             if "take_profit" in reason:
                 self.tg.send(
-                    f"🎯 <b>🔥[FUT] TAKE-PROFIT {trade['symbol']}</b>\n"
+                    f"🎯 <b>🔥 FUTURES TAKE-PROFIT {trade['symbol']}</b>\n"
                     f"PnL: <code>{trade['pnl_pct']:+.2f}%</code> "
                     f"(ROE: <code>{roe:+.1f}%</code>)\n"
                     f"(<code>${trade['pnl_usd']:+.2f}</code>)"
                 )
             elif reason == "trailing_stop":
                 self.tg.send(
-                    f"📐 <b>🔥[FUT] TRAILING STOP {trade['symbol']}</b>\n"
+                    f"📐 <b>🔥 FUTURES TRAILING STOP {trade['symbol']}</b>\n"
                     f"PnL: <code>{trade['pnl_pct']:+.2f}%</code> "
                     f"(ROE: <code>{roe:+.1f}%</code>)\n"
                     f"(<code>${trade['pnl_usd']:+.2f}</code>)"
                 )
             else:
                 self.tg.send(
-                    f"🛑 <b>🔥[FUT] STOP-LOSS {trade['symbol']}</b>\n"
+                    f"🛑 <b>🔥 FUTURES STOP-LOSS {trade['symbol']}</b>\n"
                     f"PnL: <code>{trade['pnl_pct']:+.2f}%</code> "
                     f"(ROE: <code>{roe:+.1f}%</code>)\n"
                     f"(<code>${trade['pnl_usd']:+.2f}</code>)"
@@ -558,7 +558,7 @@ class FuturesPaperTrader:
                 tg_emoji = "\U0001f7e2" if side == "long" else "\U0001f534"
 
                 self.tg.send(
-                    f"{tg_emoji} <b>🔥[FUT] {direction} {symbol} ({FUTURES_LEVERAGE}x)</b>\n"
+                    f"{tg_emoji} <b>🔥 FUTURES {direction} {symbol} ({FUTURES_LEVERAGE}x)</b>\n"
                     f"━━━━━━━━━━━━━━━━\n"
                     f"Entry: <code>${sig['close']:,.4f}</code>\n"
                     f"Notional: <code>${sizing['size_usdt']:.2f}</code>\n"
@@ -596,7 +596,7 @@ class FuturesPaperTrader:
                         print(f"  {tag} CLOSED: PnL={trade['pnl_pct']:+.2f}% (ROE={roe:+.1f}%)")
                         tg_emoji = "\u2705" if trade["pnl_usd"] > 0 else "\u274c"
                         self.tg.send(
-                            f"{tg_emoji} <b>[FUT] CLOSED {symbol}</b>\n"
+                            f"{tg_emoji} <b>🔥 FUTURES CLOSED {symbol}</b>\n"
                             f"PnL: <code>{trade['pnl_pct']:+.2f}%</code> "
                             f"(ROE: <code>{roe:+.1f}%</code>)\n"
                             f"(<code>${trade['pnl_usd']:+.2f}</code>)"
@@ -629,7 +629,7 @@ class FuturesPaperTrader:
         print("=" * 55)
 
         self.tg.send(
-            f"🟢 <b>🔥[FUT] Bot STARTED</b>\n"
+            f"🟢 <b>🔥 FUTURES Bot STARTED</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"Leverage: {FUTURES_LEVERAGE}x\n"
             f"Margin: {FUTURES_MARGIN_TYPE}\n"
@@ -703,7 +703,7 @@ class FuturesPaperTrader:
                     logger.error(f"Error in futures loop ({error_count}): {e}")
                     if error_count >= 5:
                         self.tg.send(
-                            f"🚨 <b>🔥[FUT] Bot lỗi liên tục!</b>\n"
+                            f"🚨 <b>🔥 FUTURES Bot lỗi liên tục!</b>\n"
                             f"Lỗi: <code>{str(e)[:200]}</code>"
                         )
                         error_count = 0
@@ -711,10 +711,10 @@ class FuturesPaperTrader:
         except KeyboardInterrupt:
             print("\n\n[STOP] Futures bot stopped.")
             self.tg.stop_command_listener()
-            self.tg.send("\U0001f534 <b>🔥[FUT] Bot STOPPED</b>")
+            self.tg.send("\U0001f534 <b>🔥 FUTURES Bot STOPPED</b>")
         except Exception as e:
             self.tg.stop_command_listener()
-            self.tg.send("\U0001f480 <b>🔥[FUT] Bot CRASHED!</b>\n<code>{}</code>".format(str(e)[:300]))
+            self.tg.send("\U0001f480 <b>🔥 FUTURES Bot CRASHED!</b>\n<code>{}</code>".format(str(e)[:300]))
             raise
 
     def show_status(self):
