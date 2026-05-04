@@ -322,7 +322,9 @@ class TelegramAlert:
         else:
             msg += "\n📂 <b>Không có vị thế đang mở</b>\n"
 
-        self.send(msg)
+        # Spot daily report silent, futures notify — keeps user focus on the
+        # higher-leverage account.
+        self._reply(msg)
 
     def send_bot_started(self, coins: list, strategies: list = None):
         """Send bot started notification with timestamp and details."""
@@ -449,7 +451,7 @@ class TelegramAlert:
                 "<code>/pause spot 8</code>\n"
                 "<code>/close fut BTC 50</code>\n"
             )
-            self.send(msg)
+            self._reply(msg)
 
         elif cmd == "/status":
             self._cmd_status()
@@ -479,13 +481,13 @@ class TelegramAlert:
             # Only spot bot replies to unknown commands (avoid duplicate)
             if self.mode and self.mode != "spot":
                 return
-            self.send(f"❓ Unknown command: <code>{cmd}</code>\nType /help for the list.")
+            self._reply(f"❓ Unknown command: <code>{cmd}</code>\nType /help for the list.")
 
     def _cmd_status(self):
         """Handle /status command."""
         state = self._state_getter() if self._state_getter else {}
         if not state:
-            self.send("⚠️ Không có dữ liệu trạng thái.")
+            self._reply("⚠️ Không có dữ liệu trạng thái.")
             return
 
         capital = state.get("capital", 0)
@@ -513,13 +515,13 @@ class TelegramAlert:
             f"Win rate: <code>{win_rate:.1f}%</code>\n"
             f"PnL: <code>${total_pnl:+,.2f}</code>\n"
         )
-        self.send(msg)
+        self._reply(msg)
 
     def _cmd_balance(self):
         """Handle /balance command."""
         state = self._state_getter() if self._state_getter else {}
         if not state:
-            self.send("⚠️ Không có dữ liệu trạng thái.")
+            self._reply("⚠️ Không có dữ liệu trạng thái.")
             return
 
         capital = state.get("capital", 0)
@@ -550,7 +552,7 @@ class TelegramAlert:
             f"ROI: <code>{roi:+.2f}%</code>\n"
             f"Tổng PnL: <code>${total_pnl:+,.2f}</code>\n"
         )
-        self.send(msg)
+        self._reply(msg)
 
     def _cmd_positions(self):
         """Handle /positions command."""
@@ -559,7 +561,7 @@ class TelegramAlert:
 
         open_positions = state.get("open_positions", {})
         if not open_positions:
-            self.send("📂 <b>Không có vị thế đang mở</b>")
+            self._reply("📂 <b>Không có vị thế đang mở</b>")
             return
 
         msg = f"📂 <b>Vị thế đang mở ({len(open_positions)})</b>\n━━━━━━━━━━━━━━━━\n"
@@ -596,7 +598,7 @@ class TelegramAlert:
                 f"  uPnL: <code>{upnl_str}</code>\n"
             )
 
-        self.send(msg)
+        self._reply(msg)
 
     def _cmd_history(self):
         """Handle /history command - show last 10 trades."""
@@ -604,7 +606,7 @@ class TelegramAlert:
         trade_log = state.get("trade_history", [])
 
         if not trade_log:
-            self.send("📜 <b>Chưa có giao dịch nào</b>")
+            self._reply("📜 <b>Chưa có giao dịch nào</b>")
             return
 
         last_10 = trade_log[-10:]
@@ -621,7 +623,7 @@ class TelegramAlert:
 
             msg += f"{emoji} {side} {sym}: <code>${pnl:+,.2f}</code> ({pnl_pct:+.2f}%){reason_str}\n"
 
-        self.send(msg)
+        self._reply(msg)
 
     def _cmd_pnl(self):
         """Handle /pnl command - PnL analysis."""
@@ -632,7 +634,7 @@ class TelegramAlert:
         trade_log = state.get("trade_history", [])
 
         if total_trades == 0:
-            self.send("📈 <b>Chưa có dữ liệu PnL</b>")
+            self._reply("📈 <b>Chưa có dữ liệu PnL</b>")
             return
 
         loss_count = total_trades - total_wins
@@ -670,7 +672,7 @@ class TelegramAlert:
             f"  Lớn nhất thua: <code>${largest_loss:+,.2f}</code>\n"
             f"  Profit factor: <code>{profit_factor_str}</code>\n"
         )
-        self.send(msg)
+        self._reply(msg)
 
     def _cmd_report(self):
         """Handle /report command."""
@@ -678,7 +680,7 @@ class TelegramAlert:
         prices = self._price_getter() if self._price_getter else {}
 
         if not state:
-            self.send("⚠️ Không có dữ liệu để tạo báo cáo.")
+            self._reply("⚠️ Không có dữ liệu để tạo báo cáo.")
             return
 
         self.send_daily_report(state, prices)
@@ -704,11 +706,17 @@ class TelegramAlert:
         # tell two parallel replies apart at a glance.
         return "🟢 SPOT" if self.mode == "spot" else "🔥 FUTURES"
 
+    def _reply(self, msg: str) -> bool:
+        """Send a command reply with mode-based notification priority.
+        Spot replies are silent; futures replies notify so the user's
+        attention is drawn to the higher-leverage account."""
+        return self.send(msg, silent=(self.mode == "spot"))
+
     def _cmd_pause(self, args: list):
         """/pause <spot|fut|both> [hours]   default hours=4"""
         if not args:
             if self.mode == "spot":
-                self.send("Usage: <code>/pause &lt;spot|fut|both&gt; [hours]</code>")
+                self._reply("Usage: <code>/pause &lt;spot|fut|both&gt; [hours]</code>")
             return
         target = args[0].lower()
         if not self._mode_match(target):
@@ -722,14 +730,14 @@ class TelegramAlert:
         from trading import manual_actions
         mode_key = "spot" if self.mode == "spot" else "futures"
         manual_actions.append_pause(mode_key, hours)
-        self.send(f"⏸️ <b>{self._mode_label()} PAUSE queued</b> {hours:g}h "
+        self._reply(f"⏸️ <b>{self._mode_label()} PAUSE queued</b> {hours:g}h "
                   f"(bot xử lý trong ≤30s)")
 
     def _cmd_resume(self, args: list):
         """/resume <spot|fut|both>"""
         if not args:
             if self.mode == "spot":
-                self.send("Usage: <code>/resume &lt;spot|fut|both&gt;</code>")
+                self._reply("Usage: <code>/resume &lt;spot|fut|both&gt;</code>")
             return
         target = args[0].lower()
         if not self._mode_match(target):
@@ -737,13 +745,13 @@ class TelegramAlert:
         from trading import manual_actions
         mode_key = "spot" if self.mode == "spot" else "futures"
         manual_actions.append_resume(mode_key)
-        self.send(f"▶️ <b>{self._mode_label()} RESUME queued</b>")
+        self._reply(f"▶️ <b>{self._mode_label()} RESUME queued</b>")
 
     def _cmd_close(self, args: list):
         """/close <spot|fut> SYMBOL [pct]   default pct=100"""
         if len(args) < 2:
             if self.mode == "spot":
-                self.send("Usage: <code>/close &lt;spot|fut&gt; SYMBOL [pct]</code>\n"
+                self._reply("Usage: <code>/close &lt;spot|fut&gt; SYMBOL [pct]</code>\n"
                           "Example: <code>/close fut BTC 50</code>")
             return
         target = args[0].lower()
@@ -759,13 +767,13 @@ class TelegramAlert:
 
         state = self._state_getter() if self._state_getter else {}
         if symbol not in state.get("open_positions", {}):
-            self.send(f"⚠️ {self._mode_label()} không có vị thế <b>{symbol}</b>.")
+            self._reply(f"⚠️ {self._mode_label()} không có vị thế <b>{symbol}</b>.")
             return
 
         from trading import manual_actions
         mode_key = "spot" if self.mode == "spot" else "futures"
         manual_actions.append_close(mode_key, symbol, pct / 100)
-        self.send(f"⏳ <b>{self._mode_label()} CLOSE {pct:g}% {symbol}</b> queued "
+        self._reply(f"⏳ <b>{self._mode_label()} CLOSE {pct:g}% {symbol}</b> queued "
                   f"(bot xử lý trong ≤30s)")
 
     def _cmd_today(self):
@@ -787,7 +795,7 @@ class TelegramAlert:
                 continue
 
         if not today_trades:
-            self.send(f"📅 <b>{self._mode_label()} HÔM NAY</b>\nChưa có lệnh nào.")
+            self._reply(f"📅 <b>{self._mode_label()} HÔM NAY</b>\nChưa có lệnh nào.")
             return
 
         wins = sum(1 for t in today_trades if t.get("pnl_usd", 0) > 0)
@@ -810,7 +818,7 @@ class TelegramAlert:
             reason = tr.get("reason", "")[:20]
             emoji = "✅" if pnl > 0 else "❌"
             msg += f"{emoji} {side} {sym} <code>${pnl:+.2f}</code> · {reason}\n"
-        self.send(msg)
+        self._reply(msg)
 
     def _cmd_blacklist(self):
         """/blacklist — show currently blacklisted symbols for this mode."""
@@ -827,9 +835,9 @@ class TelegramAlert:
             except Exception:
                 pass
         if not active:
-            self.send(f"✅ <b>{self._mode_label()}</b> Không coin nào bị blacklist.")
+            self._reply(f"✅ <b>{self._mode_label()}</b> Không coin nào bị blacklist.")
         else:
-            self.send(f"⛔ <b>{self._mode_label()} BLACKLIST</b>\n" + "\n".join(active))
+            self._reply(f"⛔ <b>{self._mode_label()} BLACKLIST</b>\n" + "\n".join(active))
 
     def _cmd_weekly(self):
         """/weekly — stat-based weekly digest for this mode."""
@@ -839,7 +847,7 @@ class TelegramAlert:
         try:
             from utils.weekly_digest import compute_weekly_digest
             msg = compute_weekly_digest(state, mode_label=self._mode_label())
-            self.send(msg)
+            self._reply(msg)
         except Exception as e:
             logger.error(f"Weekly digest failed: {e}")
-            self.send(f"⚠️ Weekly digest error: {e}")
+            self._reply(f"⚠️ Weekly digest error: {e}")
